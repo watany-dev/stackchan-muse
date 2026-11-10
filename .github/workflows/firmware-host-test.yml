@@ -1,0 +1,92 @@
+# Host tests, property tests and fuzzing for the hardware-free firmware code
+# (firmware/src, firmware/test; issue #17). No ESP-IDF needed.
+name: firmware host tests
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "firmware/src/**"
+      - "firmware/test/**"
+      - "firmware/muse-stackchan.patch"
+      - ".github/workflows/firmware-host-test.yml"
+  pull_request:
+    paths:
+      - "firmware/src/**"
+      - "firmware/test/**"
+      - "firmware/muse-stackchan.patch"
+      - ".github/workflows/firmware-host-test.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: unit + property tests (${{ matrix.cc }}, ASan/UBSan)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        cc: [gcc, clang]
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Install clang runtime
+        if: matrix.cc == 'clang'
+        run: sudo apt-get update && sudo apt-get install -y libclang-rt-18-dev
+      - name: Configure
+        run: cmake -S firmware/test -B build/host-test -DCMAKE_C_COMPILER=${{ matrix.cc }}
+      - name: Build
+        run: cmake --build build/host-test -j
+      - name: Test
+        # A fresh seed every run, printed in the log; replay with PROP_SEED=<n>.
+        env:
+          PROP_RUNS: "100000"
+        run: ctest --test-dir build/host-test --output-on-failure
+
+  exhaustive:
+    name: deg_to_raw over every float
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Build (optimised, no sanitizers)
+        run: |
+          cmake -S firmware/test -B build/host-release -DCMAKE_BUILD_TYPE=Release -DSTACKCHAN_SANITIZE=OFF
+          cmake --build build/host-release -j --target test_angle
+      - name: Sweep all 2^32 bit patterns
+        env:
+          PROP_EXHAUSTIVE: "1"
+        run: build/host-release/test_angle
+
+  fuzz:
+    name: fuzz ${{ matrix.target }} (60 s)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [fuzz_scs_parse, fuzz_head_cmd]
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Install clang runtime
+        run: sudo apt-get update && sudo apt-get install -y libclang-rt-18-dev
+      - name: Build
+        run: |
+          cmake -S firmware/test -B build/host-fuzz -DCMAKE_C_COMPILER=clang -DSTACKCHAN_FUZZ=ON
+          cmake --build build/host-fuzz -j --target ${{ matrix.target }}
+      - name: Fuzz
+        run: |
+          mkdir -p corpus artifacts
+          build/host-fuzz/${{ matrix.target }} corpus -max_total_time=60 -artifact_prefix=artifacts/
+      - name: Upload crashing inputs
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: ${{ matrix.target }}-crash
+          path: artifacts/
