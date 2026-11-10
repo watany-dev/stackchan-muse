@@ -1339,7 +1339,7 @@ index d0fb1d8..f66ba20 100644
          depends on HOMEHUB_LED_BACKEND_SENSECAP_ST7701
          default y
 diff --git a/esp32/main/app.c b/esp32/main/app.c
-index 2cfb86a..f41a86e 100644
+index 2cfb86a..c739816 100644
 --- a/esp32/main/app.c
 +++ b/esp32/main/app.c
 @@ -68,11 +68,15 @@
@@ -1422,7 +1422,23 @@ index 2cfb86a..f41a86e 100644
      if (advertise) start_ble_setup_server_if_needed();
      ble_server_set_companion_advertising(advertise);
      if (config_setup_complete()) ui_set_ble(advertise ? "companion" : "off");
-@@ -2630,6 +2683,10 @@ void app_run(void) {
+@@ -2445,12 +2498,13 @@ static void ota_verify_task(void *arg) {
+ static void heap_snapshot(const char *label) {
+     size_t free_int = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
+     size_t largest_int = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL);
++    size_t min_int = heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL);
+     size_t free_dma = heap_caps_get_free_size(MALLOC_CAP_DMA);
+     size_t largest_dma = heap_caps_get_largest_free_block(MALLOC_CAP_DMA);
+     size_t free_psram = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
+-    ESP_LOGI(TAG, "HEAP %-20s  int=%5uK/%5uK  dma=%5uK/%5uK  psram=%5uK",
++    ESP_LOGI(TAG, "HEAP %-20s  int=%5uK/%5uK min=%5uK  dma=%5uK/%5uK  psram=%5uK",
+              label,
+-             (unsigned)(free_int / 1024), (unsigned)(largest_int / 1024),
++             (unsigned)(free_int / 1024), (unsigned)(largest_int / 1024), (unsigned)(min_int / 1024),
+              (unsigned)(free_dma / 1024), (unsigned)(largest_dma / 1024),
+              (unsigned)(free_psram / 1024));
+ }
+@@ -2630,6 +2684,10 @@ void app_run(void) {
      sensecap_sensors_init();
  #endif
  
@@ -1433,7 +1449,7 @@ index 2cfb86a..f41a86e 100644
      if (!setup_complete) {
          // Unpaired devices advertise automatically — no button press is needed
          // to become discoverable. Pairing enforces the configured confirmation policy.
-@@ -2643,10 +2700,23 @@ void app_run(void) {
+@@ -2643,10 +2701,23 @@ void app_run(void) {
          ui_set_ble("off");
          ESP_LOGI(TAG, "BLE setup disabled; long-press reset to pair again");
  #if CONFIG_MUSE_ENABLED && CONFIG_SPIRAM
@@ -1457,6 +1473,31 @@ index 2cfb86a..f41a86e 100644
  #endif
      }
  
+@@ -2790,13 +2861,15 @@ void app_run(void) {
+ 
+         size_t free_int = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
+         size_t largest_int = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL);
++        /* StackChan: the low-water mark since boot, for the memory baseline (#34) */
++        size_t min_int = heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL);
+         size_t free_dma = heap_caps_get_free_size(MALLOC_CAP_DMA);
+         size_t largest_dma = heap_caps_get_largest_free_block(MALLOC_CAP_DMA);
+         size_t free_psram = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
+         tunnel_stats_t tun;
+         tunnel_netif_get_stats(&tun);
+         ESP_LOGI(HEARTBEAT_TAG, "hb t=%llds setup=%s wifi=%s ws=%s raw=%s ble=%s "
+-                       "int=%uK/%uK dma=%uK/%uK psram=%uK "
++                       "int=%uK/%uK min=%uK dma=%uK/%uK psram=%uK "
+                        "tun rx+%lu/%luB tx+%lu/%luB drop+%lu",
+                  esp_timer_get_time() / 1000000,
+                  s_setup_stage,
+@@ -2806,6 +2879,7 @@ void app_run(void) {
+                  s_ui_ble,
+                  (unsigned)(free_int / 1024),
+                  (unsigned)(largest_int / 1024),
++                 (unsigned)(min_int / 1024),
+                  (unsigned)(free_dma / 1024),
+                  (unsigned)(largest_dma / 1024),
+                  (unsigned)(free_psram / 1024),
 diff --git a/esp32/main/app.h b/esp32/main/app.h
 index 70a8635..5ab5819 100644
 --- a/esp32/main/app.h
