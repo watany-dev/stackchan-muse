@@ -22,7 +22,7 @@ run_find_port() {
 }
 
 @test "no PORT and no board: exit 1 with a hint" {
-    stub ls 'exit 2'   # what ls does when no glob matched
+    stub ls 'exit 2' # what ls does when no glob matched
     run_find_port
     assert_failure 1
     assert_output --partial "No board found"

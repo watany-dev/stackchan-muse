@@ -17,7 +17,7 @@ setup_firmware() {
     STUBS="$BATS_TEST_TMPDIR/stubs"
     mkdir -p "$STUBS"
     export STUB_LOG="$BATS_TEST_TMPDIR/calls.log"
-    : > "$STUB_LOG"
+    : >"$STUB_LOG"
     PATH="$STUBS:$PATH"
 
     export HOME="$BATS_TEST_TMPDIR/home"
@@ -30,7 +30,7 @@ setup_firmware() {
 # spaces stay readable. BODY (shell code) runs after that, with "$@" intact.
 stub() {
     local name="$1" body="${2:-}"
-    cat > "$STUBS/$name" <<STUB
+    cat >"$STUBS/$name" <<STUB
 #!/usr/bin/env bash
 { printf '%s' "$name"; printf ' [%s]' "\$@"; echo; } >> "\$STUB_LOG"
 $body
