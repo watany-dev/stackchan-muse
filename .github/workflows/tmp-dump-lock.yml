@@ -1,0 +1,28 @@
+name: tmp dump lock
+on:
+  push:
+    branches: [claude/project-thread-ryd0td]
+permissions:
+  contents: read
+jobs:
+  dump:
+    runs-on: ubuntu-latest
+    container: espressif/idf:v6.0.1
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: |
+          set -euo pipefail
+          export IDF_EXPORT="$IDF_PATH/export.sh" BUILD_DIR="$GITHUB_WORKSPACE/build-ci"
+          ./firmware/setup.sh
+          printf 'CONFIG_GADGET_SDK_TOKEN="mgst_%s"\n' "$(printf 'A%.0s' $(seq 43))" > firmware/sdkconfig.local-token
+          cp firmware/sdkconfig.local-tts.example firmware/sdkconfig.local-tts
+          ./firmware/build.sh
+          echo "===== LOCK BEGIN ====="
+          base64 -w0 firmware/muse-gadget-sdk/esp32/dependencies.lock; echo
+          echo "===== LOCK END ====="
+          cat firmware/muse-gadget-sdk/esp32/dependencies.lock
