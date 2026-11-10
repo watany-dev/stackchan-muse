@@ -17,3 +17,9 @@ __pycache__/
 .venv/
 .DS_Store
 formal/.tools/
+
+# libFuzzer writes crashing inputs to the working directory
+crash-*
+leak-*
+timeout-*
+oom-*

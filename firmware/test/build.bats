@@ -61,6 +61,15 @@ defaults_arg() {
     done
 }
 
+@test "the wake word chunking in src/ is copied into the SDK's muse component" {
+    write_token "$VALID_TOKEN"
+    run "$WORK/build.sh"
+    assert_success
+    for f in "$WORK"/src/stackchan_wake_chunk.c "$WORK"/src/stackchan_wake_chunk.h; do
+        cmp "$f" "$E/components/muse/$(basename "$f")" || fail "$(basename "$f") not copied"
+    done
+}
+
 @test "missing sdkconfig.local-token: exit 1 with a hint, idf.py not run" {
     run "$WORK/build.sh"
     assert_failure 1
