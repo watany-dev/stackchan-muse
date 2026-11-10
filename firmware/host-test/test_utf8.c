@@ -126,7 +126,7 @@ static void prop_cut_anywhere(void) {
 // dst + src, shorter than cap, at most 3 bytes short of what strlcat keeps,
 // and true exactly when everything fit.
 static void prop_strlcat(void) {
-    char a[200], b[200], whole[400], buf[400];
+    char a[200], b[200], whole[400], buf[420];  // buf > the largest cap (406)
     for (long r = 0; r < prop_runs; r++) {
         size_t na = gen_utf8(a, sizeof(a) - 1), nb = gen_utf8(b, sizeof(b) - 1);
         size_t cap = na + 1 + prop_below((uint32_t)nb + 8);
@@ -139,7 +139,7 @@ static void prop_strlcat(void) {
         CHECK(m < cap && m <= keep && keep - m <= 3, "kept %zu of %zu (cap %zu)", m, keep, cap);
         CHECK(valid_str(buf) && memcmp(buf, whole, m) == 0, "not a valid prefix (cap %zu)", cap);
         CHECK(all == (m == na + nb), "returned %d with %zu of %zu", all, m, na + nb);
-        CHECK((unsigned char)buf[cap] == 0x55 || cap >= sizeof(buf), "wrote past cap");
+        CHECK(cap < sizeof(buf) && (unsigned char)buf[cap] == 0x55, "wrote past cap");
     }
 }
 
