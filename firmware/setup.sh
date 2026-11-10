@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# Clones the Muse Gadget SDK at the tested commit, applies the StackChan patch
-# and regenerates the caption font with Hangul. Safe to run twice.
+# Clones the Muse Gadget SDK at the tested commit and applies the StackChan
+# patch. With FONT_HANGUL=1 it also regenerates the caption font with Hangul.
+# Safe to run twice.
 set -euo pipefail
 . "$(dirname "$0")/env.sh"
 
@@ -17,9 +18,16 @@ else
     echo "Patch applied on $(git -C "$SDK_DIR" rev-parse --short HEAD)."
 fi
 
-# The caption font is ~10 MB of generated C, so it isn't in the patch: build it
-# here from GNU Unifont (needs curl and npx/Node.js, about 2 minutes).
-if ! grep -q "0xAC00-0xD7A3" "$SDK_DIR/esp32/components/muse/fonts/muse_font_cjk_16.c" 2>/dev/null; then
-    sh "$SDK_DIR/esp32/tools/muse/gen_cjk_font.sh"
+# The SDK's caption font already has kana and kanji, so Japanese needs nothing
+# more. FONT_HANGUL=1 regenerates it with Hangul from GNU Unifont (needs curl
+# and npx/Node.js, about 2 minutes); FONT_HANGUL=0 puts the SDK's font back.
+FONT="esp32/components/muse/fonts/muse_font_cjk_16.c"
+if [ "$FONT_HANGUL" = 1 ]; then
+    if ! grep -q "0xAC00-0xD7A3" "$SDK_DIR/$FONT" 2>/dev/null; then
+        MUSE_FONT_HANGUL=1 sh "$SDK_DIR/esp32/tools/muse/gen_cjk_font.sh"
+    fi
+elif grep -q "0xAC00-0xD7A3" "$SDK_DIR/$FONT" 2>/dev/null; then
+    git -C "$SDK_DIR" checkout -q -- "$FONT"
+    echo "Caption font: back to the SDK's (no Hangul)."
 fi
 echo "Ready. Next: cp sdkconfig.local-token.example sdkconfig.local-token, add your token, then ./build.sh"
