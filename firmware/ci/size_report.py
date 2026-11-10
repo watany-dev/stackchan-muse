@@ -51,7 +51,7 @@ def sum_parts(mem: dict[str, Any] | None, pred) -> int:
 
 
 def is_text(name: str) -> bool:
-    return "text" in name or "vectors" in name
+    return "text" in name
 
 
 def is_bss(name: str) -> bool:
@@ -83,7 +83,9 @@ def collect(args: argparse.Namespace) -> int:
     layout = layout_by_name(size_json)
     diram = layout.get("DIRAM")
     iram = layout.get("IRAM")
-    psram = layout.get("External RAM")
+    # esp_idf_size は PSRAM の .bss(.ext_ram.bss)を "Flash Data" の .bss として数えることがある
+    # (chip_info/esp32s3.yaml の注記)。どちらに出ても拾えるように両方を足す。
+    psram_bss = sum_parts(layout.get("External RAM"), is_bss) + sum_parts(layout.get("Flash Data"), is_bss)
 
     build = Path(args.build_dir)
     parts = read_partitions(build / "partition_table" / "partition-table.bin")
@@ -102,7 +104,7 @@ def collect(args: argparse.Namespace) -> int:
         "diram_bss": sum_parts(diram, is_bss),
         "diram_data": sum_parts(diram, is_data),
         "iram_used": iram["used"] if iram else None,
-        "psram_bss": sum_parts(psram, is_bss),
+        "psram_bss": psram_bss,
         "app_bin": app_size,
         "app_partition": ota0["size"] if ota0 else None,
         "srmodels_bin": srmodels.stat().st_size if srmodels.is_file() else None,
