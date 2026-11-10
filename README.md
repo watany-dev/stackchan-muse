@@ -107,12 +107,15 @@ Muse がガジェットに送るのは文字だけです。音声で聞くには
 
 ```bash
 cd tts-relay
-python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
+python3 -m venv .venv && .venv/bin/pip install --require-hashes -r requirements.txt
 cp .env.example .env && echo "TTS_KEY=$(openssl rand -hex 24)" >> .env   # .env はコミットされません
+set -a && . ./.env && set +a         # server.py は .env を読まないので環境変数にする
 .venv/bin/python server.py            # 127.0.0.1:3710 だけで待ち受けます
 ```
 
 - 試す: `curl -X POST http://127.0.0.1:3710/tts -H "X-TTS-Key: <キー>" -H 'Content-Type: application/json' -d '{"text":"こんにちは"}' -o a.mp3`
+- テスト: `.venv/bin/pip install -r requirements-dev.txt && .venv/bin/pytest`(edge-tts はスタブにするのでネットワークは使いません)
+- 返すステータス: キー違いは 401、本文がおかしいときは 400、edge-tts が音声を返せなかったときは 502。`TTS_KEY` が空・16 バイト未満のときは起動しません
 - 常時動かす: `stackchan-tts.service`(systemd)。公開: `nginx.conf.example`(HTTPS、リクエスト制限、`proxy_buffering off`)
 - 声は文字の種類で選びます。かなを含めば `ja-JP-NanamiNeural`、ハングルを含めば `ko-KR-SunHiNeural`、漢字だけなら `TTS_DEFAULT_LANG`(既定 `ja`)、それ以外は `en-US-AriaNeural`。声は `.env` の `TTS_VOICE_JA` などで変えられます。出力は MP3 24kHz 48kbps モノラル。
 - edge-tts は Microsoft Edge のオンライン読み上げを使う非公式のライブラリです。予告なく使えなくなる可能性があります。
@@ -129,18 +132,34 @@ cp sdkconfig.local-tts.example sdkconfig.local-tts   # URL と TTS_KEY を書く
 
 ## 既知の問題
 
-元のリポジトリで書籍の執筆時に実測した値です(2026-10-07、韓国語・「Hi, Stack Chan」の構成)。日本語・「Hi, Muse」での実測はまだです。
+元のリポジトリで書籍の執筆時に実測した値です(2026-10-07、韓国語・「Hi, Stack Chan」の構成、**esp-sr 2.5.5**)。日本語・「Hi, Muse」での実測はまだです。今のパッチは esp-sr 2.6.1 / esp-dl 3.3.15 に固定しているので([依存の版](#依存の版))、内部 RAM の数値はこの表と変わりえます。
 
 | 問題 | 状態 |
 |---|---|
 | 話し終えてから音が出るまで25秒以上。そのうち20秒ほどは Muse のサーバーが返答を作る時間 | モデルや速度はガジェット側から変えられない |
 | スタックチャンが TTS を受け取り始めるまで4.3〜4.7秒(サーバー側は0.3秒。接続を使い回しても同じ) | **原因未確認** |
 | 呼びかけ語の最初の呼びかけを聞き逃すことがある。認識率・誤認識率は未測定 | 未測定。「Hi, Muse」(WakeNet10)でも未測定 |
-| 呼びかけ語を入れると内部 RAM の空きが27KB(最低14KB)。TTS の接続が一度すぐに失敗する | メモリ不足の疑い、未確認。WakeNet10 での値は未測定 |
+| 呼びかけ語を入れると内部 RAM の空きが27KB(最低14KB)。TTS の接続が一度すぐに失敗する | メモリ不足の疑い、未確認。WakeNet10 での値は未測定。登録後は BLE を起動せずメモリを返すようにした(#5、実機での効果は未測定)。そのため設定メニューの「Phone setup」を ON にすると1回再起動する |
 | バッテリー駆動で画面が消えると SDK がマイクを止めるので、呼びかけ語も聞こえない | SDK の動作。USB 給電でのみ試験 |
 | esp-sr 2.5.5 の wn9l の `clean()` が NULL を読んでパニックする | 呼ばずに、録音後1.5秒の検出を無視して回避 |
 | 作業パスに日本語など ASCII 以外の文字があると、コンパイラが spec ファイルのパスを読めない | `BUILD_DIR` を英数字だけのパス(既定 `~/.cache/stackchan-muse/build`)にして解決 |
 | 音声なしで字幕だけを流すときの速さはバイト数で決まるので、日本語(1文字3バイト)は英語よりゆっくり流れる | SDK の動作。未対応 |
+
+## 依存の版
+
+ビルドする時期で結果やメモリの数値が変わらないよう、依存の版を固定しています(#7)。
+
+| 対象 | 固定している場所 |
+|---|---|
+| Muse Gadget SDK | `firmware/env.sh` の `SDK_REV`(コミット) |
+| ESP-IDF | v6.0.1(`firmware/env.sh`、CI のコンテナ `espressif/idf:v6.0.1`) |
+| ESP-IDF コンポーネント(esp-sr、esp-dl、LVGL など) | パッチが入れる `esp32/dependencies.lock`。esp-sr は `idf_component.yml` でも `2.6.1` ちょうどを指定 |
+| tts-relay(Python) | `tts-relay/requirements.txt`(間接依存まで、ハッシュ付き) |
+
+`build.sh` はビルド中に `dependencies.lock` が書き換わると警告します(CI では失敗にします)。版を上げるときは:
+
+- **ESP-IDF コンポーネント**: SDK の `idf_component.yml` を書き換えて `./build.sh` を実行し、書き換わった lock ごとパッチを作り直します。lock は SDK の `.gitignore` に入っているので、`git -C muse-gadget-sdk add -f esp32/dependencies.lock` で index に入れると、`git diff HEAD` で作るパッチに含まれます。上げたあとは実機で動作とメモリを確かめ、「既知の問題」の数値と版を書き直します。
+- **tts-relay**: `requirements.in` の版を変えて、`requirements.txt` の先頭に書いてある `uv pip compile ...` のコマンドで作り直します。
 
 ## 元に戻す
 

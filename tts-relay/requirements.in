@@ -1,0 +1,3 @@
+# tts-relay の実行時の依存(直接使うものだけ)。版を変えたら requirements.txt を作り直す(README「依存の版」)。
+aiohttp==3.14.4
+edge-tts==7.2.8

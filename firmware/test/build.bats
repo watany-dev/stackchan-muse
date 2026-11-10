@@ -12,7 +12,7 @@ VALID_TOKEN="mgst_$(printf 'a%.0s' {1..42})A"
 setup() {
     setup_firmware
     E="$WORK/muse-gadget-sdk/esp32" # default SDK_DIR, under the path with a space
-    mkdir -p "$E/devices" "$E/main"
+    mkdir -p "$E/devices" "$E/main" "$E/components/muse"
     export BUILD_DIR="$BATS_TEST_TMPDIR/build"
     export IDF_EXPORT="$BATS_TEST_TMPDIR/export.sh"
     : >"$IDF_EXPORT"
@@ -49,6 +49,15 @@ defaults_arg() {
     assert_success
     for f in "$WORK"/src/*.c "$WORK"/src/*.h; do
         cmp "$f" "$E/main/$(basename "$f")" || fail "$(basename "$f") not copied"
+    done
+}
+
+@test "the UTF-8 cuts in src/ are copied into the SDK's muse component" {
+    write_token "$VALID_TOKEN"
+    run "$WORK/build.sh"
+    assert_success
+    for f in "$WORK"/src/stackchan_utf8.c "$WORK"/src/stackchan_utf8.h; do
+        cmp "$f" "$E/components/muse/$(basename "$f")" || fail "$(basename "$f") not copied"
     done
 }
 
@@ -258,4 +267,32 @@ needs_wake_word() {
     assert_success
     assert_output --partial "Wake word: himuse"
     [ ! -e "$E/devices/sdkconfig.local-wake" ]
+}
+
+# --- dependencies.lock (#7) --------------------------------------------------
+
+@test "lock unchanged by the build: no warning" {
+    write_token "$VALID_TOKEN"
+    echo pinned >"$E/dependencies.lock"
+    run "$WORK/build.sh"
+    assert_success
+    refute_output --partial "dependencies.lock changed"
+}
+
+@test "lock rewritten by the build: warning locally, still succeeds" {
+    write_token "$VALID_TOKEN"
+    echo pinned >"$E/dependencies.lock"
+    stub idf.py 'echo resolved-again > dependencies.lock'
+    CI=false run "$WORK/build.sh"
+    assert_success
+    assert_output --partial "Warning: dependencies.lock changed"
+}
+
+@test "lock rewritten by the build: fails in CI" {
+    write_token "$VALID_TOKEN"
+    echo pinned >"$E/dependencies.lock"
+    stub idf.py 'echo resolved-again > dependencies.lock'
+    CI=true run "$WORK/build.sh"
+    assert_failure 1
+    assert_output --partial "Error: dependencies.lock changed"
 }

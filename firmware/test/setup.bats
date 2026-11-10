@@ -111,3 +111,43 @@ needs_font_hangul() {
     assert_equal "$(cat "$SDK/$FONT")" "$(cat "$SRC/$FONT")"
     assert_equal "$(git -C "$SDK" status --porcelain -- "$FONT")" ""
 }
+
+# A patch that, like the real one, also adds esp32/dependencies.lock (#7).
+patch_with_lock() {
+    cat >>"$WORK/muse-stackchan.patch" <<'PATCH'
+diff --git a/esp32/dependencies.lock b/esp32/dependencies.lock
+new file mode 100644
+--- /dev/null
++++ b/esp32/dependencies.lock
+@@ -0,0 +1 @@
++pinned
+PATCH
+}
+
+@test "a dependencies.lock left in a fresh clone does not block the patch (#7)" {
+    patch_with_lock
+    git clone -q "$SRC" "$SDK"
+    echo stale >"$SDK/esp32/dependencies.lock"
+    run "$WORK/setup.sh"
+    assert_success
+    assert_output --partial "Patch applied on"
+    assert_equal "$(cat "$SDK/esp32/dependencies.lock")" pinned
+    assert_equal "$(cat "$SDK/esp32/stackchan.txt")" stackchan
+}
+
+@test "a lock rewritten by a build is put back to the pinned one, the rest left as is (#7)" {
+    patch_with_lock
+    run "$WORK/setup.sh"
+    assert_success
+    echo resolved-again >"$SDK/esp32/dependencies.lock"
+    run "$WORK/setup.sh"
+    assert_success
+    assert_output --partial "dependencies.lock reset to the pinned versions"
+    assert_equal "$(cat "$SDK/esp32/dependencies.lock")" pinned
+    assert_equal "$(cat "$SDK/esp32/stackchan.txt")" stackchan
+
+    run "$WORK/setup.sh"
+    assert_success
+    assert_output --partial "Patch already applied."
+    refute_output --partial "reset to the pinned"
+}

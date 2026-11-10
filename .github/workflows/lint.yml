@@ -39,13 +39,19 @@ jobs:
           cache: pip
           cache-dependency-path: tts-relay/requirements*.txt
       - name: Install
-        run: pip install -r requirements.txt -r requirements-dev.txt
+        # requirements.txt は間接依存までハッシュ付きで固定している(#7)。開発用の道具は
+        # ハッシュを持たないので、同じ pip install にまとめずに分けて入れる。
+        run: |
+          pip install --require-hashes -r requirements.txt
+          pip install -r requirements-dev.txt
       - name: ruff check
         run: ruff check --output-format=github .
       - name: ruff format
         run: ruff format --check --diff .
       - name: mypy
-        run: mypy server.py
+        run: mypy server.py tests
+      - name: pytest
+        run: pytest
       - name: pip-audit
         run: pip-audit -r requirements.txt
 

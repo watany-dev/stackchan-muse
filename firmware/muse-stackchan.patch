@@ -12,7 +12,7 @@ index 3f7ad4a..84e7329 100644
 +devices/sdkconfig.local-tts
 +devices/sdkconfig.local-wake
 diff --git a/esp32/components/muse/CMakeLists.txt b/esp32/components/muse/CMakeLists.txt
-index 2732802..d45bf7c 100644
+index 2732802..bc3d681 100644
 --- a/esp32/components/muse/CMakeLists.txt
 +++ b/esp32/components/muse/CMakeLists.txt
 @@ -49,6 +49,9 @@ if(CONFIG_MUSE_ENABLED)
@@ -25,7 +25,20 @@ index 2732802..d45bf7c 100644
      if(CONFIG_MUSE_CJK_FONT)
          list(APPEND srcs "fonts/muse_font_cjk_16.c")   # captions' CJK fallback
      endif()
-@@ -109,6 +112,11 @@ set(muse_priv_requires
+@@ -102,6 +105,12 @@ elseif(CONFIG_HOMEHUB_VOICE)
+     list(APPEND embed "test_reply.mp3")
+ endif()
+ 
++# Cuts replies at UTF-8 character boundaries (issue #12). It comes from
++# firmware/src in the stackchan-muse repo (build.sh copies it here).
++if("muse_chat_session.cpp" IN_LIST srcs)
++    list(APPEND srcs "stackchan_utf8.c")
++endif()
++
+ set(muse_priv_requires
+     esp_timer esp_driver_usb_serial_jtag esp_psram nvs_flash
+     bt esp-tls mbedtls esp_app_format esp_http_client
+@@ -109,6 +118,11 @@ set(muse_priv_requires
      esp_lcd esp_adc esp_driver_i2s esp_driver_ledc esp_driver_spi esp_driver_uart esp_wifi
      esp_driver_pcnt)
  list(APPEND muse_priv_requires camera)
@@ -91,7 +104,7 @@ index 0c18ced..c2617a2 100644
          bool "Show Chinese and Japanese in captions"
          depends on MUSE_ENABLED
 diff --git a/esp32/components/muse/idf_component.yml b/esp32/components/muse/idf_component.yml
-index 28cdbf7..a7113ad 100644
+index 28cdbf7..410ed7a 100644
 --- a/esp32/components/muse/idf_component.yml
 +++ b/esp32/components/muse/idf_component.yml
 @@ -78,3 +78,7 @@ dependencies:
@@ -99,14 +112,14 @@ index 28cdbf7..a7113ad 100644
      rules:
        - if: "$CONFIG{MUSE_BOARD_ID} == \"waveshare_s3_lcd7\""
 +  espressif/esp-sr:
-+    version: "^2.6.1"   # wn10_himuse ("Hi, Muse") first ships in 2.6.1
++    version: "2.6.1"   # exact (#7); wn10_himuse ("Hi, Muse") first ships in 2.6.1
 +    rules:
 +      - if: "$CONFIG{MUSE_BOARD_ID} == \"m5stack_cores3\""
 diff --git a/esp32/components/muse/muse_chat_session.cpp b/esp32/components/muse/muse_chat_session.cpp
-index 9c99dc0..8aff638 100644
+index 9c99dc0..8f65317 100644
 --- a/esp32/components/muse/muse_chat_session.cpp
 +++ b/esp32/components/muse/muse_chat_session.cpp
-@@ -65,6 +65,9 @@
+@@ -65,9 +65,13 @@
  
  extern "C" {
  #include "cJSON.h"
@@ -116,7 +129,11 @@ index 9c99dc0..8aff638 100644
  #include "minimp3.h"
  #include "muse_account_api.h"
  #include "muse_link.h"
-@@ -938,6 +941,21 @@ static size_t resample(resampler_t *r, const int16_t *in, size_t n, int16_t *out
++#include "stackchan_utf8.h"
+ #include "muse_settings.h"
+ #include "muse_wifi.h"
+ }
+@@ -938,6 +942,21 @@ static size_t resample(resampler_t *r, const int16_t *in, size_t n, int16_t *out
      return o;
  }
  
@@ -138,7 +155,7 @@ index 9c99dc0..8aff638 100644
  /* ---- Turn: dictation ---- */
  
  static void turn_reset_streams(void)
-@@ -954,6 +972,10 @@ static void turn_reset_streams(void)
+@@ -954,6 +973,10 @@ static void turn_reset_streams(void)
  static void turn_finish(void)
  {
      turn_reset_streams();
@@ -149,7 +166,34 @@ index 9c99dc0..8aff638 100644
      s_turn.phase = P_IDLE;
      s_turn.dict_id = s_turn.chat_id = 0;
      s_turn.tts_msg = -1;
-@@ -1496,11 +1518,230 @@ static void on_chat_ack(stream_t *s)
+@@ -1332,12 +1355,17 @@ static void append_text(msg_t &m, const char *text)
+         if (!m.len) {
+             full[0] = '\0';
+         }
+-        strlcat(full, text, TEXT_MAX);
++        /* Cut on a character boundary, and append nothing more once a piece
++         * didn't fit, so the text stays a whole-character prefix (#12). */
++        if (strlen(full) == m.len) {
++            utf8_strlcat(full, text, TEXT_MAX);
++        }
+     }
+     m.len += add;
+     size_t have = strlen(m.tail);
+     if (add >= sizeof(m.tail) - 1) {
+         strlcpy(m.tail, text + add - (sizeof(m.tail) - 1), sizeof(m.tail));
++        utf8_trim_head(m.tail);   /* don't start the caption mid-character */
+         return;
+     }
+     if (have + add >= sizeof(m.tail)) {
+@@ -1345,6 +1373,7 @@ static void append_text(msg_t &m, const char *text)
+         memmove(m.tail, m.tail + drop, have - drop + 1);
+     }
+     strlcat(m.tail, text, sizeof(m.tail));
++    utf8_trim_head(m.tail);
+ }
+ 
+ /*
+@@ -1496,11 +1525,235 @@ static void on_chat_ack(stream_t *s)
      mark(M_ACK);
      ESP_LOGI(TAG, "chat/stream ack: user message %s", s_turn.user_ids[0]);
      cJSON_Delete(root);
@@ -324,7 +368,12 @@ index 9c99dc0..8aff638 100644
 +    }
 +    xStreamBufferReset(s_http_tts_sb);
 +    cJSON *o = cJSON_CreateObject();
-+    cJSON_AddStringToObject(o, "text", s_turn.texts + i * TEXT_MAX);
++    cJSON *text = cJSON_AddStringToObject(o, "text", s_turn.texts + i * TEXT_MAX);
++    if (text) {
++        /* The relay answers 400 to broken UTF-8 (#12); trim the copy, not the
++         * text, which may still be streaming in. */
++        utf8_trim_tail(text->valuestring);
++    }
 +    char *body = cJSON_PrintUnformatted(o);
 +    cJSON_Delete(o);
 +    if (!body) {
@@ -380,7 +429,7 @@ index 9c99dc0..8aff638 100644
  static void start_tts(void)
  {
      if (s_turn.tts_msg >= 0) {
-@@ -1526,6 +1767,26 @@ static void start_tts(void)
+@@ -1526,6 +1779,26 @@ static void start_tts(void)
           * end. decode() plays it at the speaker's volume, captions following,
           * and finishes the message once it's drained.
           */
@@ -407,7 +456,7 @@ index 9c99dc0..8aff638 100644
          m.pcm_start = s_turn.pcm_out;
          m.pcm_frames = (uint32_t)(m.len * MIC_RATE / TEXT_CHARS_PER_S);
          m.tts = TTS_ACTIVE;
-@@ -1985,6 +2246,9 @@ static void hatch_task(void *arg)
+@@ -1985,6 +2258,9 @@ static void hatch_task(void *arg)
          }
          if (s_turn.phase == P_WAIT_REPLY) {
              start_tts();
@@ -698,18 +747,470 @@ index 0000000..51c9b6a
 +
 +/* Drops buffered audio, e.g. after Muse spoke or recorded. */
 +void muse_wake_reset(void);
+diff --git a/esp32/dependencies.lock b/esp32/dependencies.lock
+new file mode 100644
+index 0000000..da70d8a
+--- /dev/null
++++ b/esp32/dependencies.lock
+@@ -0,0 +1,443 @@
++dependencies:
++  espressif/bmi270:
++    component_hash: a234ece0bea3595c45bb75f80449b823b366ca677aed6e3d4c35f14c90c4ace5
++    dependencies:
++    - name: idf
++      require: private
++      version: '>=5.2'
++    - name: espressif/sensor_hub
++      registry_url: https://components.espressif.com
++      require: public
++      version: ^0.1.4
++    source:
++      registry_url: https://components.espressif.com
++      type: service
++    version: 1.1.0
++  espressif/cjson:
++    component_hash: e788323270d90738662d66fffa910bfe1fba019bba087f01557e70c40485b469
++    dependencies:
++    - name: idf
++      require: private
++      version: '>=5.0'
++    source:
++      registry_url: https://components.espressif.com/
++      type: service
++    version: 1.7.19~2
++  espressif/cmake_utilities:
++    component_hash: 351350613ceafba240b761b4ea991e0f231ac7a9f59a9ee901f751bddc0bb18f
++    dependencies:
++    - name: idf
++      require: private
++      version: '>=4.1'
++    source:
++      registry_url: https://components.espressif.com
++      type: service
++    version: 0.5.3
++  espressif/dl_fft:
++    component_hash: 965be7152132b365061abf5fc5fc7b85e525f73b94a204cdda61cfe9572c0d77
++    dependencies:
++    - name: idf
++      require: private
++      version: '>=5.0'
++    source:
++      registry_url: https://components.espressif.com
++      type: service
++    version: 0.8.0
++  espressif/esp-dl:
++    component_hash: bec531351a359de9f49f7bad90038e5328a24d004da56d0a27731f9448ce7af8
++    dependencies:
++    - name: espressif/dl_fft
++      registry_url: https://components.espressif.com
++      require: private
++      version: '>=0.8.0'
++    - name: espressif/esp_new_jpeg
++      registry_url: https://components.espressif.com
++      require: private
++      version: ^1
++    - name: idf
++      require: private
++      version: '*'
++    source:
++      registry_url: https://components.espressif.com
++      type: service
++    targets:
++    - esp32
++    - esp32c2
++    - esp32c3
++    - esp32c5
++    - esp32c6
++    - esp32p4
++    - esp32s2
++    - esp32s3
++    - esp32s31
++    version: 3.3.15
++  espressif/esp-sr:
++    component_hash: 7ba1e97d446440faa96a7d98fbda7dbaaf7ae6b960e06cc68264d38aa6eb4d14
++    dependencies:
++    - name: espressif/cjson
++      registry_url: https://components.espressif.com
++      require: private
++      version: ^1.7.19
++    - name: espressif/dl_fft
++      registry_url: https://components.espressif.com
++      require: private
++      version: '>=0.6.0'
++    - name: espressif/esp-dl
++      registry_url: https://components.espressif.com
++      require: private
++      version: ~3.3.12
++    - name: espressif/esp-dsp
++      registry_url: https://components.espressif.com
++      require: private
++      rules:
++      - if: target in [esp32, esp32s2, esp32c3, esp32c5, esp32c6]
++      version: 1.8.0
++    - name: idf
++      require: private
++      version: '>=5.0'
++    source:
++      registry_url: https://components.espressif.com/
++      type: service
++    version: 2.6.1
++  espressif/esp_cam_sensor:
++    component_hash: 902c305b77f7c42b60fff5a084e397694f8a3fd6e6b72299996a7c856666e983
++    dependencies:
++    - name: espressif/cmake_utilities
++      registry_url: https://components.espressif.com
++      require: private
++      version: 0.*
++    - name: espressif/esp_sccb_intf
++      registry_url: https://components.espressif.com
++      require: private
++      version: '>=0.0.5'
++    - name: idf
++      require: private
++      version: '>=5.3'
++    source:
++      registry_url: https://components.espressif.com
++      type: service
++    targets:
++    - esp32p4
++    - esp32s3
++    - esp32c3
++    - esp32c5
++    - esp32c6
++    - esp32c61
++    version: 2.0.1
++  espressif/esp_codec_dev:
++    component_hash: df70f10af8d7b922add7b9d07372c9c97ab356e58d72b7a892050227c2d44348
++    dependencies:
++    - name: idf
++      require: private
++      version: '>=4.0'
++    source:
++      registry_url: https://components.espressif.com/
++      type: service
++    version: 1.5.11
++  espressif/esp_io_expander:
++    component_hash: 7b7f91270172e46ca4597e3874f48d8412e280e8c295559f5922ec38656e3e5f
++    dependencies:
++    - name: idf
++      require: private
++      version: '>=4.4.2'
++    source:
++      registry_url: https://components.espressif.com
++      type: service
++    version: 1.2.1
++  espressif/esp_io_expander_aw9523:
++    component_hash: be562b62a1741ab41fbaf2a296702214b5c087ae8c88299a59fade8c3d8a7322
++    dependencies:
++    - name: espressif/esp_io_expander
++      registry_url: https://components.espressif.com
++      require: public
++      version: ^1.2.0
++    - name: idf
++      require: private
++      version: '>=5.2'
++    source:
++      registry_url: https://components.espressif.com
++      type: service
++    version: 1.0.0
++  espressif/esp_lcd_ili9341:
++    component_hash: 840387ee0c90a473e43fdc75570f77c52f06423aa331d95479bde8b418c43547
++    dependencies:
++    - name: espressif/cmake_utilities
++      registry_url: https://components.espressif.com
++      require: private
++      version: 0.*
++    - name: idf
++      require: private
++      version: '>=5.2'
++    source:
++      registry_url: https://components.espressif.com
++      type: service
++    version: 2.1.0
++  espressif/esp_lcd_touch:
++    component_hash: 3f85a7d95af876f1a6ecca8eb90a81614890d0f03a038390804e5a77e2caf862
++    dependencies:
++    - name: idf
++      require: private
++      version: '>=4.4.2'
++    source:
++      registry_url: https://components.espressif.com
++      type: service
++    version: 1.2.1
++  espressif/esp_lcd_touch_ft5x06:
++    component_hash: d49f3dec3ae89617c31d96ac6f31bbc3212a0f049354eabd55c9457e454c56ae
++    dependencies:
++    - name: espressif/esp_lcd_touch
++      registry_url: https://components.espressif.com
++      require: public
++      version: ^1.2.0
++    - name: idf
++      require: private
++      version: '>=5.2'
++    source:
++      registry_url: https://components.espressif.com
++      type: service
++    version: 1.1.1
++  espressif/esp_lvgl_port:
++    component_hash: d3c020b45c3dfc0d1706a83b63a1c34a6eb444a6e935f9afff79f92b7b94dcef
++    dependencies:
++    - name: idf
++      require: private
++      version: '>=5.2'
++    - name: lvgl/lvgl
++      registry_url: https://components.espressif.com
++      require: public
++      version: '>=8,<10'
++    source:
++      registry_url: https://components.espressif.com
++      type: service
++    version: 2.9.0
++  espressif/esp_new_jpeg:
++    component_hash: e1e7e6991193c41ed6c9fc386702aa7821433319e7aa9c3147cd3236310cd69c
++    dependencies: []
++    source:
++      registry_url: https://components.espressif.com
++      type: service
++    targets:
++    - esp32
++    - esp32s2
++    - esp32s3
++    - esp32s31
++    - esp32p4
++    - esp32c2
++    - esp32c3
++    - esp32c5
++    - esp32c6
++    - esp32c61
++    - esp32h4
++    version: 1.0.2
++  espressif/esp_sccb_intf:
++    component_hash: fcf118cd29a1caaf3b09bacd99975bc035c996b470474dfb950202c16e06d7b5
++    dependencies:
++    - name: idf
++      require: private
++      version: '>=5.3'
++    source:
++      registry_url: https://components.espressif.com
++      type: service
++    version: 1.0.0
++  espressif/esp_video:
++    component_hash: ba8f4aa63ad9bda3cc18a3afe1b9ba5b39c7359a6ad79392a94e42ba8cf9e5f8
++    dependencies:
++    - name: espressif/cmake_utilities
++      registry_url: https://components.espressif.com
++      require: private
++      version: 0.*
++    - name: espressif/esp_cam_sensor
++      registry_url: https://components.espressif.com
++      require: private
++      version: 2.0.*
++    - name: espressif/esp_h264
++      registry_url: https://components.espressif.com
++      require: private
++      rules:
++      - if: target in [esp32p4]
++      version: 1.0.4
++    - name: espressif/esp_ipa
++      registry_url: https://components.espressif.com
++      require: private
++      rules:
++      - if: target in [esp32p4]
++      version: 1.3.*
++    - name: idf
++      require: private
++      version: '>=5.4'
++    - name: espressif/usb_host_uvc
++      registry_url: https://components.espressif.com
++      require: private
++      rules:
++      - if: target in [esp32p4, esp32s3]
++      version: 2.4.*
++    source:
++      registry_url: https://components.espressif.com
++      type: service
++    targets:
++    - esp32p4
++    - esp32s3
++    - esp32c3
++    - esp32c5
++    - esp32c6
++    - esp32c61
++    version: 2.0.1
++  espressif/esp_websocket_client:
++    component_hash: ae561d39222a399ddda5e470913c3d54a3c0f53dce15b8d21a3aaa4226dd74b1
++    dependencies:
++    - name: idf
++      require: private
++      version: '>=5.0'
++    source:
++      registry_url: https://components.espressif.com/
++      type: service
++    version: 1.2.3
++  espressif/i2c_bus:
++    component_hash: 483112c1619c54c38d0b734fb25f1678733267858a77b7af2f48cc7db6dbbd84
++    dependencies:
++    - name: espressif/cmake_utilities
++      registry_url: https://components.espressif.com
++      require: private
++      version: '*'
++    - name: idf
++      require: private
++      version: '>=4.0'
++    source:
++      registry_url: https://components.espressif.com
++      type: service
++    version: 1.5.2
++  espressif/led_strip:
++    component_hash: 28621486f77229aaf81c71f5e15d6fbf36c2949cf11094e07090593e659e7639
++    dependencies:
++    - name: idf
++      require: private
++      version: '>=5.0'
++    source:
++      registry_url: https://components.espressif.com/
++      type: service
++    version: 3.0.3
++  espressif/m5stack_core_s3:
++    component_hash: 99cb3d730e1719211d0f6c2309109f672f9127c9ea90bef85b8b2b99ea074940
++    dependencies:
++    - name: espressif/esp_codec_dev
++      registry_url: https://components.espressif.com
++      require: public
++      version: ~1.5
++    - name: espressif/esp_video
++      registry_url: https://components.espressif.com
++      require: public
++      version: ~2.0
++    - name: espressif/bmi270
++      registry_url: https://components.espressif.com
++      require: public
++      version: '*'
++    - name: espressif/esp_io_expander_aw9523
++      registry_url: https://components.espressif.com
++      require: public
++      version: '*'
++    - name: espressif/esp_lcd_ili9341
++      registry_url: https://components.espressif.com
++      require: private
++      version: '*'
++    - name: espressif/esp_lcd_touch_ft5x06
++      registry_url: https://components.espressif.com
++      require: private
++      version: '*'
++    - name: espressif/esp_lvgl_port
++      registry_url: https://components.espressif.com
++      require: public
++      version: ^2
++    - name: idf
++      require: private
++      version: '>=5.4'
++    - name: espressif/usb
++      registry_url: https://components.espressif.com
++      require: public
++      version: ^1
++    source:
++      registry_url: https://components.espressif.com/
++      type: service
++    targets:
++    - esp32s3
++    version: 4.1.0
++  espressif/sensor_hub:
++    component_hash: ea30db551c34aee2862482abf8b3164dd3855ecb4b4659b1e6878455c9cb9e22
++    dependencies:
++    - name: espressif/cmake_utilities
++      registry_url: https://components.espressif.com
++      require: private
++      version: 0.*
++    - name: espressif/i2c_bus
++      registry_url: https://components.espressif.com
++      require: public
++      version: 1.*
++    - name: idf
++      require: private
++      version: '>=4.4'
++    source:
++      registry_url: https://components.espressif.com
++      type: service
++    version: 0.1.5
++  espressif/usb:
++    component_hash: 99eee72ea224d9117d4c342442717a1f20bf8112e2ab5d7d7038b827874f4c92
++    dependencies:
++    - name: idf
++      require: private
++      version: '>=5.5.3'
++    source:
++      registry_url: https://components.espressif.com
++      type: service
++    targets:
++    - esp32s2
++    - esp32s3
++    - esp32s31
++    - esp32p4
++    - esp32h4
++    - linux
++    version: 1.6.0
++  espressif/usb_host_uvc:
++    component_hash: f20c4e4dea50536e2e29daaf589b5f5984402284c155867daef27d6b64869f78
++    dependencies:
++    - name: idf
++      require: private
++      version: '>=5.0'
++    - name: espressif/usb
++      registry_url: https://components.espressif.com
++      require: public
++      rules:
++      - if: idf_version >=6.0
++      - if: target not in ["linux"]
++      version: ^1.0.0
++    source:
++      registry_url: https://components.espressif.com
++      type: service
++    targets:
++    - esp32s2
++    - esp32s3
++    - esp32p4
++    - esp32h4
++    - linux
++    version: 2.4.2
++  idf:
++    source:
++      type: idf
++    version: 6.0.1
++  lvgl/lvgl:
++    component_hash: 184e532558c1c45fefed631f3e235423d22582aafb4630f3e8885c35281a49ae
++    dependencies: []
++    source:
++      registry_url: https://components.espressif.com/
++      type: service
++    version: 9.5.0
++direct_dependencies:
++- espressif/cjson
++- espressif/esp-sr
++- espressif/esp_codec_dev
++- espressif/esp_websocket_client
++- espressif/led_strip
++- espressif/m5stack_core_s3
++- idf
++- lvgl/lvgl
++manifest_hash: 88c1a272caa3bd3fa829d895d363c777812181118f4ae8d55980baded9cc016d
++target: esp32s3
++version: 3.0.0
 diff --git a/esp32/devices/sdkconfig.muse-stackchan b/esp32/devices/sdkconfig.muse-stackchan
 new file mode 100644
-index 0000000..783494e
+index 0000000..bffa522
 --- /dev/null
 +++ b/esp32/devices/sdkconfig.muse-stackchan
-@@ -0,0 +1,15 @@
+@@ -0,0 +1,18 @@
 +# M5Stack StackChan: a CoreS3 on the StackChan body. Load after
 +# devices/sdkconfig.muse-m5stack-cores3 to add the neck servo commands and
 +# Japanese captions (the SDK's CJK caption font already has kana and kanji;
 +# setup.sh can regenerate it with Hangul too).
 +CONFIG_HOMEHUB_STACKCHAN_HEAD=y
 +CONFIG_MUSE_CJK_FONT=y
++# BLE stays off after setup, so its memory goes to TLS and TTS; turning on
++# "Phone setup" restarts once with BLE up.
++CONFIG_MUSE_BLE_ON_DEMAND=y
 +
 +# "Hi, Muse" wake word: ESP-SR WakeNet10 in a "model" partition at 0x830000.
 +# For "Hi, Stack Chan" instead, build with WAKE_WORD=histackchan (build.sh
@@ -742,13 +1243,14 @@ index 22fca2f..f747d67 100644
      list(APPEND GADGET_SRCS "sensecap_sensors.c")
  endif()
 diff --git a/esp32/main/Kconfig.projbuild b/esp32/main/Kconfig.projbuild
-index d0fb1d8..66f5e81 100644
+index d0fb1d8..f66ba20 100644
 --- a/esp32/main/Kconfig.projbuild
 +++ b/esp32/main/Kconfig.projbuild
-@@ -264,6 +264,16 @@ menu "ESP32 Device SDK"
+@@ -264,7 +264,27 @@ menu "ESP32 Device SDK"
              switch is on, the button keeps its setup role (tap to confirm
              pairing, hold to reset).
  
+-    config HOMEHUB_SENSECAP_SENSORS
 +    config HOMEHUB_STACKCHAN_HEAD
 +        bool "StackChan neck servos (head.move, head.gesture, head.get)"
 +        depends on MUSE_BOARD_M5STACK_CORES3
@@ -759,14 +1261,25 @@ index d0fb1d8..66f5e81 100644
 +            PY32 IO expander at 0x6F. Advertises head.move, head.gesture and
 +            head.get so Muse can turn the head.
 +
-     config HOMEHUB_SENSECAP_SENSORS
++    config MUSE_BLE_ON_DEMAND
++        bool "Muse: BLE only when the phone companion is on"
++        depends on MUSE_ENABLED && SPIRAM
++        default n
++        help
++            Once setup is complete, boot without the BLE stack and give the
++            controller's memory back to the heap instead of bringing BLE up
++            at boot in case the phone companion is turned on later. Turning
++            the companion ("Phone setup") on then restarts the device once
++            with BLE up. Unpaired devices still start BLE to pair.
++
          bool "SenseCAP Indicator air sensors (sensors.read)"
          depends on HOMEHUB_LED_BACKEND_SENSECAP_ST7701
+         default y
 diff --git a/esp32/main/app.c b/esp32/main/app.c
-index 2cfb86a..0ea5e9a 100644
+index 2cfb86a..f41a86e 100644
 --- a/esp32/main/app.c
 +++ b/esp32/main/app.c
-@@ -68,6 +68,9 @@
+@@ -68,11 +68,15 @@
  #if CONFIG_HOMEHUB_SENSECAP_SENSORS
  #include "sensecap_sensors.h"
  #endif
@@ -776,7 +1289,13 @@ index 2cfb86a..0ea5e9a 100644
  #if CONFIG_MUSE_WATCHER_CAMERA
  #include "boards/watcher_camera.h"
  #endif
-@@ -1895,6 +1898,13 @@ static cJSON *on_ws_command(
+ #if CONFIG_MUSE_ENABLED
+ #include "muse_glue.h"
++#include "muse_state.h"
+ // Muse joins Wi-Fi from its own settings, before or without pairing.
+ #define WIFI_WITHOUT_PAIRING 1
+ #else
+@@ -1895,6 +1899,13 @@ static cJSON *on_ws_command(
          return voice_configure_command(params);
      }
  #endif
@@ -790,6 +1309,188 @@ index 2cfb86a..0ea5e9a 100644
  #if CONFIG_HOMEHUB_SENSECAP_SENSORS
      if (strcmp(command, "sensors.read") == 0) {
          return sensecap_sensors_command();
+@@ -2314,7 +2325,49 @@ bool app_hatch_vm_credentials(const char *want_vm, char *vm_id, size_t id_cap,
+ #endif  // CONFIG_MUSE_ENABLED || CONFIG_HOMEHUB_VOICE
+ 
+ #if CONFIG_MUSE_ENABLED
++#if CONFIG_MUSE_BLE_ON_DEMAND
++// Registered devices boot without BLE and give its memory back to the heap
++// (about 30 KB of internal RAM the controller would otherwise hold). Turning
++// the phone companion on then restarts once with BLE up; this word, which
++// survives esp_restart() but not a power cycle, carries that request across.
++#define BLE_BOOT_REQUEST_MAGIC 0x424c4531u  // "BLE1"
++static RTC_NOINIT_ATTR uint32_t s_ble_boot_request;
++static bool s_ble_companion_boot = false;
++static bool s_ble_restart_pending = false;
++
++static bool take_ble_boot_request(void) {
++    bool requested = s_ble_boot_request == BLE_BOOT_REQUEST_MAGIC
++                     && esp_reset_reason() == ESP_RST_SW;
++    s_ble_boot_request = 0;
++    s_ble_companion_boot = requested;
++    return requested;
++}
++#endif
++
++bool app_ble_companion_boot(void) {
++#if CONFIG_MUSE_BLE_ON_DEMAND
++    return s_ble_companion_boot;
++#else
++    return false;
++#endif
++}
++
+ void app_ble_companion_set(bool advertise) {
++#if CONFIG_MUSE_BLE_ON_DEMAND
++    if (advertise && ble_server_memory_released()) {
++        // The setting is already saved, so the companion comes back on after
++        // the restart (see keeper_task in muse_glue.c).
++        if (s_ble_restart_pending) return;
++        s_ble_restart_pending = true;
++        ESP_LOGI(TAG, "phone companion needs BLE; restarting with BLE on");
++        muse_state_set_caption("PHONE SETUP: RESTARTING");
++        s_ble_boot_request = BLE_BOOT_REQUEST_MAGIC;
++        if (xTaskCreate(restart_task, "restart", 2048, NULL, 3, NULL) != pdPASS) {
++            esp_restart();
++        }
++        return;
++    }
++#endif
+     if (advertise) start_ble_setup_server_if_needed();
+     ble_server_set_companion_advertising(advertise);
+     if (config_setup_complete()) ui_set_ble(advertise ? "companion" : "off");
+@@ -2630,6 +2683,10 @@ void app_run(void) {
+     sensecap_sensors_init();
+ #endif
+ 
++#if CONFIG_MUSE_BLE_ON_DEMAND
++    // Read (and clear) it on every boot so a stale word never carries over.
++    bool ble_boot_requested = take_ble_boot_request();
++#endif
+     if (!setup_complete) {
+         // Unpaired devices advertise automatically — no button press is needed
+         // to become discoverable. Pairing enforces the configured confirmation policy.
+@@ -2643,10 +2700,23 @@ void app_run(void) {
+         ui_set_ble("off");
+         ESP_LOGI(TAG, "BLE setup disabled; long-press reset to pair again");
+ #if CONFIG_MUSE_ENABLED && CONFIG_SPIRAM
++#if CONFIG_MUSE_BLE_ON_DEMAND
++        // StackChan: keep BLE off unless the phone companion asked for it
++        // (app_ble_companion_set restarts into this branch), and hand the
++        // controller's memory to the heap for TLS, TTS and the wake word.
++        if (ble_boot_requested) {
++            ESP_LOGI(TAG, "restarted for the phone companion; starting BLE");
++            start_ble_setup_server_if_needed();
++        } else {
++            ble_server_release_unused_memory();
++            heap_snapshot("after ble_release");
++        }
++#else
+         // Muse may turn on its BLE companion later. The controller needs a
+         // 30 KB internal block that TLS and the VM session leave fragmented,
+         // so bring the stack up now; it stays silent until advertising is on.
+         start_ble_setup_server_if_needed();
++#endif
+ #endif
+     }
+ 
+diff --git a/esp32/main/app.h b/esp32/main/app.h
+index 70a8635..5ab5819 100644
+--- a/esp32/main/app.h
++++ b/esp32/main/app.h
+@@ -54,6 +54,10 @@ bool app_wifi_nap(void);
+ // Starts the BLE server if needed and keeps it advertising (or not) for Muse's
+ // phone-setup service once setup is complete.
+ void app_ble_companion_set(bool advertise);
++// True when this boot is the restart app_ble_companion_set() asked for to bring
++// BLE up for the phone companion (CONFIG_MUSE_BLE_ON_DEMAND). The companion
++// should then stay on instead of being switched off at boot.
++bool app_ble_companion_boot(void);
+ // A talk-button press. Returns true when it confirmed a pending pairing.
+ bool app_confirm_pairing_press(void);
+ // Full setup reset and reboot, from a worker task.
+diff --git a/esp32/main/ble_server.c b/esp32/main/ble_server.c
+index fd77035..1b717f7 100644
+--- a/esp32/main/ble_server.c
++++ b/esp32/main/ble_server.c
+@@ -752,6 +752,25 @@ bool ble_server_send_encrypted_json(const char *json, uint32_t generation) {
+     return sent;
+ }
+ 
++// Set once the controller's and host's memory is back in the heap. The stack
++// can't start again until a restart, so ble_server_start() refuses after that.
++static bool s_mem_released = false;
++
++void ble_server_release_unused_memory(void) {
++    if (s_started || s_mem_released) return;
++    esp_err_t err = esp_bt_mem_release(ESP_BT_MODE_BLE);
++    if (err != ESP_OK) {
++        ESP_LOGW(TAG, "esp_bt_mem_release: %s", esp_err_to_name(err));
++        return;
++    }
++    s_mem_released = true;
++    ESP_LOGI(TAG, "BLE not started; memory released until restart");
++}
++
++bool ble_server_memory_released(void) {
++    return s_mem_released;
++}
++
+ void ble_server_full_shutdown(void) {
+     if (!s_started || s_shutting_down) return;
+     s_shutting_down = true;
+@@ -794,6 +813,8 @@ void ble_server_full_shutdown(void) {
+     err = esp_bt_mem_release(ESP_BT_MODE_BLE);
+     if (err != ESP_OK) {
+         ESP_LOGW(TAG, "esp_bt_mem_release: %s", esp_err_to_name(err));
++    } else {
++        s_mem_released = true;
+     }
+ 
+     ESP_LOGI(TAG, "BLE shut down, memory released");
+@@ -936,6 +957,11 @@ static void host_task(void *arg) {
+ 
+ void ble_server_start(const char *device_name, const ble_callbacks_t *cb) {
+     if (s_started) return;
++    if (s_mem_released) {
++        // The controller would fail to initialise on released memory.
++        ESP_LOGW(TAG, "BLE memory already released; restart to use BLE");
++        return;
++    }
+     if (cb) {
+         s_cb = *cb;
+     } else {
+diff --git a/esp32/main/ble_server.h b/esp32/main/ble_server.h
+index 014a0a9..549025a 100644
+--- a/esp32/main/ble_server.h
++++ b/esp32/main/ble_server.h
+@@ -94,3 +94,8 @@ void ble_server_delayed_disconnect(uint32_t ms);
+ // for the shared radio. After this call, BLE cannot be brought back up
+ // without a reboot.
+ void ble_server_full_shutdown(void);
++
++// Gives the BLE controller's and host's static memory back to the heap when
++// the stack was never started. BLE stays unavailable until the next restart.
++void ble_server_release_unused_memory(void);
++bool ble_server_memory_released(void);
+diff --git a/esp32/main/muse_glue.c b/esp32/main/muse_glue.c
+index 51cba9a..c44d8dc 100644
+--- a/esp32/main/muse_glue.c
++++ b/esp32/main/muse_glue.c
+@@ -473,9 +473,11 @@ static void keeper_task(void *arg) {
+     uint32_t pending = KEEP_BLE;
+     bool napped = false;
+     bool setup_done = config_setup_complete();
+-    if (setup_done && muse_settings_ble_on()) {
++    if (setup_done && muse_settings_ble_on() && !app_ble_companion_boot()) {
+         // Registered devices boot with the phone companion off; the settings
+-        // switch turns it on until the next restart.
++        // switch turns it on until the next restart. With
++        // CONFIG_MUSE_BLE_ON_DEMAND turning it on restarts once to bring BLE
++        // up, and that boot keeps it on.
+         ESP_LOGI(TAG, "registered; phone setup BLE off at boot");
+         muse_settings_set_ble_on(false);
+     }
 diff --git a/esp32/main/noise_control.cpp b/esp32/main/noise_control.cpp
 index 2ba3e31..9e5575f 100644
 --- a/esp32/main/noise_control.cpp

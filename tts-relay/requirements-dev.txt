@@ -1,4 +1,6 @@
-# lint・型検査・脆弱性検査の道具(CI と手元で使う)。版は Dependabot が更新する。
+# lint・型検査・脆弱性検査・テストの道具(CI と手元で使う)。版は Dependabot が更新する。
 ruff==0.17.4
 mypy==2.4.1
 pip-audit==2.10.1
+pytest==9.2.0
+hypothesis==6.170.15
