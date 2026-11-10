@@ -7,8 +7,8 @@ SDK_DIR="${SDK_DIR:-$HERE/muse-gadget-sdk}"
 BUILD_DIR="${BUILD_DIR:-$HOME/.cache/stackchan-muse/build}"
 IDF_EXPORT="${IDF_EXPORT:-$HOME/.espressif/esp-idf-v6.0.1/export.sh}"
 PORT="${PORT:-}"
-WAKE_WORD="${WAKE_WORD:-himuse}"   # himuse ("Hi, Muse") or histackchan ("Hi, Stack Chan")
-FONT_HANGUL="${FONT_HANGUL:-0}"    # 1 adds Hangul to the caption font (Korean replies)
+WAKE_WORD="${WAKE_WORD:-himuse}" # himuse ("Hi, Muse") or histackchan ("Hi, Stack Chan")
+FONT_HANGUL="${FONT_HANGUL:-0}"  # 1 adds Hangul to the caption font (Korean replies)
 
 find_port() {
     if [ -z "$PORT" ]; then
