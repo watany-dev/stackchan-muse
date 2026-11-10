@@ -13,12 +13,12 @@ setup_firmware() {
     WORK="$BATS_TEST_TMPDIR/My Projects/firmware"
     mkdir -p "$WORK"
     cp "$FIRMWARE_SRC"/*.sh "$WORK"/
-    cp -R "$FIRMWARE_SRC/src" "$WORK"/   # build.sh copies these into the SDK
+    cp -R "$FIRMWARE_SRC/src" "$WORK"/ # build.sh copies these into the SDK
 
     STUBS="$BATS_TEST_TMPDIR/stubs"
     mkdir -p "$STUBS"
     export STUB_LOG="$BATS_TEST_TMPDIR/calls.log"
-    : > "$STUB_LOG"
+    : >"$STUB_LOG"
     PATH="$STUBS:$PATH"
 
     export HOME="$BATS_TEST_TMPDIR/home"
@@ -31,7 +31,7 @@ setup_firmware() {
 # spaces stay readable. BODY (shell code) runs after that, with "$@" intact.
 stub() {
     local name="$1" body="${2:-}"
-    cat > "$STUBS/$name" <<STUB
+    cat >"$STUBS/$name" <<STUB
 #!/usr/bin/env bash
 { printf '%s' "$name"; printf ' [%s]' "\$@"; echo; } >> "\$STUB_LOG"
 $body

@@ -15,9 +15,9 @@ setup() {
 
     SRC="$BATS_TEST_TMPDIR/sdk-src"
     mkdir -p "$SRC/$(dirname "$FONT")" "$SRC/esp32/tools/muse"
-    echo '/* SDK font: kana and kanji */' > "$SRC/$FONT"
+    echo '/* SDK font: kana and kanji */' >"$SRC/$FONT"
     # Appends the Hangul range to the font, like the real generator's output.
-    cat > "$SRC/esp32/tools/muse/gen_cjk_font.sh" <<'GEN'
+    cat >"$SRC/esp32/tools/muse/gen_cjk_font.sh" <<'GEN'
 echo "gen_cjk_font MUSE_FONT_HANGUL=${MUSE_FONT_HANGUL:-}" >> "$STUB_LOG"
 echo '/* 0xAC00-0xD7A3 */' >> "$(dirname "$0")/../../components/muse/fonts/muse_font_cjk_16.c"
 GEN
@@ -26,7 +26,7 @@ GEN
     git -C "$SRC" commit -q -m "fake SDK"
     export SDK_REPO="file://$SRC" SDK_REV="$(git -C "$SRC" rev-parse HEAD)"
 
-    cat > "$WORK/muse-stackchan.patch" <<'PATCH'
+    cat >"$WORK/muse-stackchan.patch" <<'PATCH'
 diff --git a/esp32/stackchan.txt b/esp32/stackchan.txt
 new file mode 100644
 --- /dev/null
@@ -34,7 +34,7 @@ new file mode 100644
 @@ -0,0 +1 @@
 +stackchan
 PATCH
-    SDK="$WORK/muse-gadget-sdk"   # default SDK_DIR, under the path with a space
+    SDK="$WORK/muse-gadget-sdk" # default SDK_DIR, under the path with a space
 }
 
 gen_runs() {
@@ -65,7 +65,7 @@ gen_runs() {
 
 @test "an SDK on another commit is moved to SDK_REV before patching" {
     git clone -q "$SRC" "$SDK"
-    echo newer > "$SRC/newer.txt"
+    echo newer >"$SRC/newer.txt"
     git -C "$SRC" add -A && git -C "$SRC" commit -q -m newer
     git -C "$SDK" pull -q
     run "$WORK/setup.sh"
@@ -74,7 +74,7 @@ gen_runs() {
 }
 
 @test "a patch that doesn't apply fails the script" {
-    printf 'not a patch\n' > "$WORK/muse-stackchan.patch"
+    printf 'not a patch\n' >"$WORK/muse-stackchan.patch"
     run "$WORK/setup.sh"
     assert_failure
     refute_output --partial "Ready."

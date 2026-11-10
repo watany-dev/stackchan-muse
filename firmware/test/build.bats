@@ -4,23 +4,23 @@
 load test_helper
 
 B64='ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_'
-LAST='AEIMQUYcgkosw048'                 # base64url characters whose low 2 bits are 0
+LAST='AEIMQUYcgkosw048' # base64url characters whose low 2 bits are 0
 BAD_LAST='BCDFGHJKLNOPRSTVWXZabdefhijlmnpqrtuvxyz1235679-_'
-NOT_B64=' +/=.!~@#%*(),:'               # no " \ ; [ ] $ (they'd change how the line is parsed)
+NOT_B64=' +/=.!~@#%*(),:' # no " \ ; [ ] $ (they'd change how the line is parsed)
 VALID_TOKEN="mgst_$(printf 'a%.0s' {1..42})A"
 
 setup() {
     setup_firmware
-    E="$WORK/muse-gadget-sdk/esp32"   # default SDK_DIR, under the path with a space
+    E="$WORK/muse-gadget-sdk/esp32" # default SDK_DIR, under the path with a space
     mkdir -p "$E/devices" "$E/main"
     export BUILD_DIR="$BATS_TEST_TMPDIR/build"
     export IDF_EXPORT="$BATS_TEST_TMPDIR/export.sh"
-    : > "$IDF_EXPORT"
+    : >"$IDF_EXPORT"
     stub idf.py
 }
 
 write_token() {
-    printf 'CONFIG_GADGET_SDK_TOKEN="%s"\n' "$1" > "$WORK/sdkconfig.local-token"
+    printf 'CONFIG_GADGET_SDK_TOKEN="%s"\n' "$1" >"$WORK/sdkconfig.local-token"
 }
 
 # The -DSDKCONFIG_DEFAULTS value idf.py got on its last call.
@@ -82,40 +82,48 @@ defaults_arg() {
     local seed="${TOKEN_SEED:-$$}" n="${TOKEN_SAMPLES:-200}"
     RANDOM=$seed
 
-    rand_from() {   # rand_from SET COUNT
+    rand_from() { # rand_from SET COUNT
         local set="$1" i out=""
-        for ((i = 0; i < $2; i++)); do out+="${set:RANDOM % ${#set}:1}"; done
+        for ((i = 0; i < $2; i++)); do out+="${set:RANDOM%${#set}:1}"; done
         printf '%s' "$out"
     }
     gen_token() {
         local t
         case $((RANDOM % 8)) in
-            0 | 1) printf 'mgst_%s%s' "$(rand_from "$B64" 42)" "$(rand_from "$LAST" 1)" ;;          # valid
-            2) printf 'mgst_%s%s' "$(rand_from "$B64" 41)" "$(rand_from "$LAST" 1)" ;;               # one short
-            3) printf 'mgst_%s%s' "$(rand_from "$B64" 43)" "$(rand_from "$LAST" 1)" ;;               # one long
-            4) printf 'mgst_%s%s' "$(rand_from "$B64" 42)" "$(rand_from "$BAD_LAST" 1)" ;;           # bad last
-            5) t="mgst_$(rand_from "$B64" 42)$(rand_from "$LAST" 1)"                                 # non-base64url
-               local p=$((5 + RANDOM % 43))
-               printf '%s%s%s' "${t:0:p}" "$(rand_from "$NOT_B64" 1)" "${t:p+1}" ;;
-            6) printf 'mgst_%s' "$(rand_from "$B64" $((RANDOM % 60 + 1)))" ;;                        # any length
-            7) t="mgst_"; local p=$((RANDOM % 5))                                                    # mangled prefix
-               printf '%s%s%s%s' "${t:0:p}" "$(rand_from "$B64" 1)" "${t:p+1}" \
-                   "$(rand_from "$B64" 42)$(rand_from "$LAST" 1)" ;;
+            0 | 1) printf 'mgst_%s%s' "$(rand_from "$B64" 42)" "$(rand_from "$LAST" 1)" ;; # valid
+            2) printf 'mgst_%s%s' "$(rand_from "$B64" 41)" "$(rand_from "$LAST" 1)" ;;     # one short
+            3) printf 'mgst_%s%s' "$(rand_from "$B64" 43)" "$(rand_from "$LAST" 1)" ;;     # one long
+            4) printf 'mgst_%s%s' "$(rand_from "$B64" 42)" "$(rand_from "$BAD_LAST" 1)" ;; # bad last
+            5)
+                t="mgst_$(rand_from "$B64" 42)$(rand_from "$LAST" 1)" # non-base64url
+                local p=$((5 + RANDOM % 43))
+                printf '%s%s%s' "${t:0:p}" "$(rand_from "$NOT_B64" 1)" "${t:p+1}"
+                ;;
+            6) printf 'mgst_%s' "$(rand_from "$B64" $((RANDOM % 60 + 1)))" ;; # any length
+            7)
+                t="mgst_"
+                local p=$((RANDOM % 5)) # mangled prefix
+                printf '%s%s%s%s' "${t:0:p}" "$(rand_from "$B64" 1)" "${t:p+1}" \
+                    "$(rand_from "$B64" 42)$(rand_from "$LAST" 1)"
+                ;;
         esac
     }
 
     local tokens="$BATS_TEST_TMPDIR/tokens" i
-    : > "$tokens"
-    for ((i = 0; i < n; i++)); do gen_token >> "$tokens"; echo >> "$tokens"; done
+    : >"$tokens"
+    for ((i = 0; i < n; i++)); do
+        gen_token >>"$tokens"
+        echo >>"$tokens"
+    done
 
     local verdicts="$BATS_TEST_TMPDIR/verdicts"
-    cmake -DTOKENS="$tokens" -P "$BATS_TEST_DIRNAME/sdk_token_rule.cmake" | sed 's/^-- //' > "$verdicts"
-    assert_equal "$(wc -l < "$verdicts" | tr -d ' ')" "$n"
+    cmake -DTOKENS="$tokens" -P "$BATS_TEST_DIRNAME/sdk_token_rule.cmake" | sed 's/^-- //' >"$verdicts"
+    assert_equal "$(wc -l <"$verdicts" | tr -d ' ')" "$n"
 
     local token sdk ours mismatches="" accepted=0 rejected=0
     while IFS= read -r token <&3 && IFS= read -r sdk <&4; do
         write_token "$token"
-        if "$WORK/build.sh" > /dev/null 2> "$BATS_TEST_TMPDIR/err"; then
+        if "$WORK/build.sh" >/dev/null 2>"$BATS_TEST_TMPDIR/err"; then
             ours=accept
         elif grep -q "not a valid mgst_ token" "$BATS_TEST_TMPDIR/err"; then
             ours=reject
@@ -124,7 +132,7 @@ defaults_arg() {
         fi
         [ "$sdk" = accept ] && accepted=$((accepted + 1)) || rejected=$((rejected + 1))
         [ "$ours" = "$sdk" ] || mismatches+="  '$token' (${#token} chars): SDK $sdk, build.sh $ours"$'\n'
-    done 3< "$tokens" 4< "$verdicts"
+    done 3<"$tokens" 4<"$verdicts"
 
     [ -z "$mismatches" ] || fail "build.sh and the SDK disagree (TOKEN_SEED=$seed):
 $mismatches"
@@ -134,7 +142,7 @@ $mismatches"
 }
 
 @test "token rule: a commented-out token is not a token" {
-    printf '# CONFIG_GADGET_SDK_TOKEN="%s"\n' "$VALID_TOKEN" > "$WORK/sdkconfig.local-token"
+    printf '# CONFIG_GADGET_SDK_TOKEN="%s"\n' "$VALID_TOKEN" >"$WORK/sdkconfig.local-token"
     run "$WORK/build.sh"
     assert_failure 1
     assert_output --partial "not a valid mgst_ token"
@@ -143,20 +151,20 @@ $mismatches"
 
 @test "token rule: a commented-out line above the real one is ignored" {
     printf '# CONFIG_GADGET_SDK_TOKEN="old"\nCONFIG_GADGET_SDK_TOKEN="%s"\n' "$VALID_TOKEN" \
-        > "$WORK/sdkconfig.local-token"
+        >"$WORK/sdkconfig.local-token"
     run "$WORK/build.sh"
     assert_success
 }
 
 @test "token rule: leading whitespace on the line is rejected" {
-    printf '  CONFIG_GADGET_SDK_TOKEN="%s"\n' "$VALID_TOKEN" > "$WORK/sdkconfig.local-token"
+    printf '  CONFIG_GADGET_SDK_TOKEN="%s"\n' "$VALID_TOKEN" >"$WORK/sdkconfig.local-token"
     run "$WORK/build.sh"
     assert_failure 1
     assert_output --partial "not a valid mgst_ token"
 }
 
 @test "token rule: trailing whitespace after the closing quote is accepted" {
-    printf 'CONFIG_GADGET_SDK_TOKEN="%s"   \n' "$VALID_TOKEN" > "$WORK/sdkconfig.local-token"
+    printf 'CONFIG_GADGET_SDK_TOKEN="%s"   \n' "$VALID_TOKEN" >"$WORK/sdkconfig.local-token"
     run "$WORK/build.sh"
     assert_success
 }
@@ -174,7 +182,7 @@ $mismatches"
 
 @test "without sdkconfig.local-tts: captions only, and a stale copy in the SDK is removed" {
     write_token "$VALID_TOKEN"
-    echo stale > "$E/devices/sdkconfig.local-tts"
+    echo stale >"$E/devices/sdkconfig.local-tts"
     run "$WORK/build.sh"
     assert_success
     assert_output --partial "Spoken replies: off"
@@ -185,7 +193,7 @@ $mismatches"
 
 @test "with sdkconfig.local-tts: copied into the SDK and appended to SDKCONFIG_DEFAULTS" {
     write_token "$VALID_TOKEN"
-    echo 'CONFIG_MUSE_TTS_URL="http://relay"' > "$WORK/sdkconfig.local-tts"
+    echo 'CONFIG_MUSE_TTS_URL="http://relay"' >"$WORK/sdkconfig.local-tts"
     run "$WORK/build.sh"
     assert_success
     assert_output --partial "Spoken replies: on"
@@ -197,7 +205,7 @@ $mismatches"
 @test "a stale generated sdkconfig in the build directory is removed before building" {
     write_token "$VALID_TOKEN"
     mkdir -p "$BUILD_DIR"
-    echo 'CONFIG_OLD=y' > "$BUILD_DIR/sdkconfig"
+    echo 'CONFIG_OLD=y' >"$BUILD_DIR/sdkconfig"
     run "$WORK/build.sh"
     assert_success
     [ ! -e "$BUILD_DIR/sdkconfig" ]
@@ -215,7 +223,7 @@ needs_wake_word() {
     for w in hello HiMuse ""; do
         WAKE_WORD="$w" run "$WORK/build.sh"
         if [ -z "$w" ]; then
-            assert_success   # empty means "use the default"
+            assert_success # empty means "use the default"
         else
             assert_failure 1
             assert_output --partial "WAKE_WORD must be himuse or histackchan"
