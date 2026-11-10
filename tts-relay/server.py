@@ -1,10 +1,14 @@
-"""StackChan TTS 중계 — Muse 의 글자 답을 MP3 로 바꿔 돌려준다.
+"""スタックチャン TTS 中継 — Muse の文字の返答を MP3 にして返す。
 
-POST /tts  {"text": "..."}  헤더 X-TTS-Key  →  audio/mpeg (24kHz 48kbps mono, 청크로 흘려보낸다)
-GET  /health                                  →  ok
+POST /tts  {"text": "..."}  ヘッダー X-TTS-Key  →  audio/mpeg (24kHz 48kbps モノラル、チャンクで流す)
+GET  /health                                    →  ok
 
-127.0.0.1 에만 열고 nginx 를 거쳐 공개한다. 음성은 edge-tts(Microsoft Edge 의 온라인 음성)를 쓴다.
+127.0.0.1 だけで待ち受け、nginx 経由で公開する。音声は edge-tts(Microsoft Edge のオンライン読み上げ)を使う。
+
+声は文字種で選ぶ: かなを含めば日本語、ハングルを含めば韓国語、漢字だけなら TTS_DEFAULT_LANG、
+それ以外は英語。
 """
+
 import hmac
 import logging
 import os
@@ -16,11 +20,30 @@ from aiohttp import web
 
 KEY = os.environ["TTS_KEY"]
 MAX_CHARS = 1000
-VOICE_KO = os.environ.get("TTS_VOICE_KO", "ko-KR-SunHiNeural")
-VOICE_EN = os.environ.get("TTS_VOICE_EN", "en-US-AriaNeural")
-HANGUL = re.compile(r"[㄰-㆏가-힣]")
+VOICES = {
+    "ja": os.environ.get("TTS_VOICE_JA", "ja-JP-NanamiNeural"),
+    "ko": os.environ.get("TTS_VOICE_KO", "ko-KR-SunHiNeural"),
+    "en": os.environ.get("TTS_VOICE_EN", "en-US-AriaNeural"),
+}
+# 漢字だけの返答(「了解」など)は中国語と区別できないので、この言語で読む
+DEFAULT_LANG = os.environ.get("TTS_DEFAULT_LANG", "ja")
+KANA = re.compile(r"[\u3040-\u30ff\u31f0-\u31ff\uff66-\uff9f]")
+HANGUL = re.compile(r"[\u3130-\u318f\uac00-\ud7a3]")
+KANJI = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff]")
 MARKDOWN = re.compile(r"[*_`#>\[\]]|https?://\S+")
 log = logging.getLogger("stackchan-tts")
+
+
+def pick_voice(text: str) -> str:
+    if KANA.search(text):
+        lang = "ja"
+    elif HANGUL.search(text):
+        lang = "ko"
+    elif KANJI.search(text):
+        lang = DEFAULT_LANG
+    else:
+        lang = "en"
+    return VOICES.get(lang, VOICES["en"])
 
 
 async def tts(request: web.Request) -> web.StreamResponse:
@@ -30,12 +53,12 @@ async def tts(request: web.Request) -> web.StreamResponse:
         body = await request.json()
         text = str(body["text"])
     except Exception:
-        return web.Response(status=400, text="need JSON {\"text\": ...}")
+        return web.Response(status=400, text='need JSON {"text": ...}')
     text = MARKDOWN.sub(" ", text).strip()[:MAX_CHARS]
     if not text:
         return web.Response(status=400, text="empty text")
 
-    voice = VOICE_KO if HANGUL.search(text) else VOICE_EN
+    voice = pick_voice(text)
     t0 = time.monotonic()
     first = None
     size = 0
@@ -48,8 +71,14 @@ async def tts(request: web.Request) -> web.StreamResponse:
             size += len(chunk["data"])
             await resp.write(chunk["data"])
     await resp.write_eof()
-    log.info("%d chars, %s: first audio %.2fs, done %.2fs, %d bytes", len(text), voice,
-             first or -1, time.monotonic() - t0, size)
+    log.info(
+        "%d chars, %s: first audio %.2fs, done %.2fs, %d bytes",
+        len(text),
+        voice,
+        first or -1,
+        time.monotonic() - t0,
+        size,
+    )
     return resp
 
 

@@ -1,11 +1,15 @@
 #!/usr/bin/env bash
 # Builds the StackChan Muse firmware. Needs sdkconfig.local-token here;
-# sdkconfig.local-tts is optional (spoken replies).
+# sdkconfig.local-tts is optional (spoken replies). WAKE_WORD picks the wake
+# word: himuse ("Hi, Muse", the default) or histackchan ("Hi, Stack Chan").
 set -euo pipefail
 . "$(dirname "$0")/env.sh"
 idf_env
 
-[ -d "$SDK_DIR/esp32" ] || { echo "Run ./setup.sh first." >&2; exit 1; }
+[ -d "$SDK_DIR/esp32" ] || {
+    echo "Run ./setup.sh first." >&2
+    exit 1
+}
 [ -f "$HERE/sdkconfig.local-token" ] || {
     echo "Missing sdkconfig.local-token: cp sdkconfig.local-token.example sdkconfig.local-token and add your token." >&2
     exit 1
@@ -30,8 +34,24 @@ else
     echo "Spoken replies: off (captions only)"
 fi
 
+case "$WAKE_WORD" in
+    himuse)
+        rm -f "$E/devices/sdkconfig.local-wake"
+        ;;
+    histackchan)
+        printf '%s\n' '# CONFIG_SR_WN_WN10_HIMUSE is not set' 'CONFIG_SR_WN_WN9L_HISTACKCHAN_TTS3=y' \
+            > "$E/devices/sdkconfig.local-wake"
+        DEFAULTS="$DEFAULTS;devices/sdkconfig.local-wake"
+        ;;
+    *)
+        echo "WAKE_WORD must be himuse or histackchan, not '$WAKE_WORD'." >&2
+        exit 1
+        ;;
+esac
+echo "Wake word: $WAKE_WORD"
+
 mkdir -p "$BUILD_DIR"
-rm -f "$BUILD_DIR/sdkconfig"   # a stale generated config would override the overlays
+rm -f "$BUILD_DIR/sdkconfig" # a stale generated config would override the overlays
 cd "$E"
 idf.py -B "$BUILD_DIR" -DIDF_TARGET=esp32s3 -DSDKCONFIG="$BUILD_DIR/sdkconfig" \
     -DSDKCONFIG_DEFAULTS="$DEFAULTS" build

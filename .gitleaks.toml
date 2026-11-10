@@ -1,0 +1,19 @@
+# gitleaks の設定。既定のルールに、このリポジトリ固有の秘密情報のルールを足す。
+# .gitignore に頼らず、誤ってコミットされたトークンやキーを CI で止めるため。
+title = "stackchan-muse"
+
+[extend]
+useDefault = true
+
+[[rules]]
+id = "muse-sdk-token"
+description = "Muse Gadget SDK トークン(mgst_ で始まる)"
+regex = '''mgst_[A-Za-z0-9_\-]{8,}'''
+keywords = ["mgst_"]
+
+[[rules]]
+id = "tts-relay-key"
+description = "tts-relay の共有キー(TTS_KEY / CONFIG_MUSE_HTTP_TTS_KEY)"
+regex = '''(?:TTS_KEY|CONFIG_MUSE_HTTP_TTS_KEY)[ \t]*=[ \t]*["']?([A-Za-z0-9+/=_\-]{8,})'''
+secretGroup = 1
+keywords = ["tts_key"]

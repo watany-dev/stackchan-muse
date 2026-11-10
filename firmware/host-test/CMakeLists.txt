@@ -1,6 +1,6 @@
 # Host tests for the hardware-free firmware code in ../src (issue #17).
 #
-#   cmake -S firmware/test -B build/host-test && cmake --build build/host-test
+#   cmake -S firmware/host-test -B build/host-test && cmake --build build/host-test
 #   ctest --test-dir build/host-test --output-on-failure
 #
 # Fuzzers (clang only): add -DSTACKCHAN_FUZZ=ON -DCMAKE_C_COMPILER=clang.
