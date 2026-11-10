@@ -109,10 +109,13 @@ Muse がガジェットに送るのは文字だけです。音声で聞くには
 cd tts-relay
 python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
 cp .env.example .env && echo "TTS_KEY=$(openssl rand -hex 24)" >> .env   # .env はコミットされません
+set -a && . ./.env && set +a         # server.py は .env を読まないので環境変数にする
 .venv/bin/python server.py            # 127.0.0.1:3710 だけで待ち受けます
 ```
 
 - 試す: `curl -X POST http://127.0.0.1:3710/tts -H "X-TTS-Key: <キー>" -H 'Content-Type: application/json' -d '{"text":"こんにちは"}' -o a.mp3`
+- テスト: `.venv/bin/pip install -r requirements-dev.txt && .venv/bin/pytest`(edge-tts はスタブにするのでネットワークは使いません)
+- 返すステータス: キー違いは 401、本文がおかしいときは 400、edge-tts が音声を返せなかったときは 502。`TTS_KEY` が空・16 バイト未満のときは起動しません
 - 常時動かす: `stackchan-tts.service`(systemd)。公開: `nginx.conf.example`(HTTPS、リクエスト制限、`proxy_buffering off`)
 - 声は文字の種類で選びます。かなを含めば `ja-JP-NanamiNeural`、ハングルを含めば `ko-KR-SunHiNeural`、漢字だけなら `TTS_DEFAULT_LANG`(既定 `ja`)、それ以外は `en-US-AriaNeural`。声は `.env` の `TTS_VOICE_JA` などで変えられます。出力は MP3 24kHz 48kbps モノラル。
 - edge-tts は Microsoft Edge のオンライン読み上げを使う非公式のライブラリです。予告なく使えなくなる可能性があります。
