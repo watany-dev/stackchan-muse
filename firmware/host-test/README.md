@@ -1,8 +1,8 @@
 # ファームウェアのホストテスト
 
-`firmware/src/` にある、ハードウェアに触らないコード(SCS サーボのパケット、角度の変換、`head.*` コマンドの引数検査)を PC 上でテストします。ESP-IDF も実機もいりません(issue #17)。
+`firmware/src/` にある、ハードウェアに触らないコード(SCS サーボのパケット、角度の変換、`head.*` コマンドの引数検査、返答の UTF-8 切り詰め)を PC 上でテストします。ESP-IDF も実機もいりません(issue #17)。
 
-`firmware/src/` のファイルは `build.sh` がビルドのたびに SDK の `esp32/main/` へコピーし、パッチ側の `stackchan_head.c` から使います。実機で動くコードとテストするコードは同じファイルです。
+`firmware/src/` のファイルは `build.sh` がビルドのたびに SDK の `esp32/main/` へコピーし、パッチ側の `stackchan_head.c` から使います。`stackchan_utf8.*` は `esp32/components/muse/` にもコピーし、`muse_chat_session.cpp` から使います。実機で動くコードとテストするコードは同じファイルです。
 
 ## 動かし方
 
@@ -31,6 +31,7 @@ ctest --test-dir build/host-test --output-on-failure
 - **SCS パケット**: 組み立てたステータスパケットを解析すると同じ id・データに戻る。途中までのバイト列は「まだ足りない」になる。FF FF 以降の 1 ビット反転は必ず拒否される。FF FF を含まないノイズの後ろのパケットも見つかる。任意のバイト列で範囲外を読まない
 - **角度**: 任意の float(NaN, ±Inf を含む)で `deg_to_raw` は 0〜1000。首の可動範囲では単調増加で、`raw_to_deg(deg_to_raw(d))` と `d` の差は半ステップ(0.5 / 3.2 度)以下。可動範囲の端が 0〜1000 の内側に収まる
 - **コマンド引数**: 任意の JSON で、成功か `missing_param` / `invalid_param` のどちらか。`head.move` は `yaw` と `pitch` がどちらも有限の数値のときだけ通り、`duration_ms` は常に 100〜3000。`head.gesture` は 4 種類の名前以外すべて `invalid_param`
+- **UTF-8 の切り詰め**(#12): 正しい UTF-8 は変わらない。任意の位置で切った文字列は、末尾(先頭)を落とすと正しい UTF-8 の接頭辞(接尾辞)になり、落とすのは 3 バイト以下。`utf8_strlcat` は容量が足りないとき文字の境界で切り、結果は常に容量未満で `strlcat` との差は 3 バイト以下。任意のバイト位置で分けて流れてきた返答を足していっても、残るのは正しい UTF-8 の接頭辞
 
 ## ファジング
 
@@ -50,4 +51,4 @@ CI(`.github/workflows/firmware-host-test.yml`)では、gcc と clang でのテ�
 
 ## まだ切り出していないもの
 
-issue #17 のうち、呼びかけ語のチャンク分け(`muse_wake.c`)と UTF-8 の切り詰め(#12)はまだです。`muse_wake.c` は SDK 側の差分が大きくなること、UTF-8 は #12 の修正が先に入る必要があることから、別に進めます。
+issue #17 のうち、呼びかけ語のチャンク分け(`muse_wake.c`)はまだです。SDK 側の差分が大きくなるため、別に進めます。

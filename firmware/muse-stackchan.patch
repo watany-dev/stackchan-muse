@@ -12,7 +12,7 @@ index 3f7ad4a..84e7329 100644
 +devices/sdkconfig.local-tts
 +devices/sdkconfig.local-wake
 diff --git a/esp32/components/muse/CMakeLists.txt b/esp32/components/muse/CMakeLists.txt
-index 2732802..d45bf7c 100644
+index 2732802..bc3d681 100644
 --- a/esp32/components/muse/CMakeLists.txt
 +++ b/esp32/components/muse/CMakeLists.txt
 @@ -49,6 +49,9 @@ if(CONFIG_MUSE_ENABLED)
@@ -25,7 +25,20 @@ index 2732802..d45bf7c 100644
      if(CONFIG_MUSE_CJK_FONT)
          list(APPEND srcs "fonts/muse_font_cjk_16.c")   # captions' CJK fallback
      endif()
-@@ -109,6 +112,11 @@ set(muse_priv_requires
+@@ -102,6 +105,12 @@ elseif(CONFIG_HOMEHUB_VOICE)
+     list(APPEND embed "test_reply.mp3")
+ endif()
+ 
++# Cuts replies at UTF-8 character boundaries (issue #12). It comes from
++# firmware/src in the stackchan-muse repo (build.sh copies it here).
++if("muse_chat_session.cpp" IN_LIST srcs)
++    list(APPEND srcs "stackchan_utf8.c")
++endif()
++
+ set(muse_priv_requires
+     esp_timer esp_driver_usb_serial_jtag esp_psram nvs_flash
+     bt esp-tls mbedtls esp_app_format esp_http_client
+@@ -109,6 +118,11 @@ set(muse_priv_requires
      esp_lcd esp_adc esp_driver_i2s esp_driver_ledc esp_driver_spi esp_driver_uart esp_wifi
      esp_driver_pcnt)
  list(APPEND muse_priv_requires camera)
@@ -103,10 +116,10 @@ index 28cdbf7..a7113ad 100644
 +    rules:
 +      - if: "$CONFIG{MUSE_BOARD_ID} == \"m5stack_cores3\""
 diff --git a/esp32/components/muse/muse_chat_session.cpp b/esp32/components/muse/muse_chat_session.cpp
-index 9c99dc0..fe0c4b9 100644
+index 9c99dc0..9d8c169 100644
 --- a/esp32/components/muse/muse_chat_session.cpp
 +++ b/esp32/components/muse/muse_chat_session.cpp
-@@ -65,6 +65,9 @@
+@@ -65,9 +65,13 @@
  
  extern "C" {
  #include "cJSON.h"
@@ -116,7 +129,11 @@ index 9c99dc0..fe0c4b9 100644
  #include "minimp3.h"
  #include "muse_account_api.h"
  #include "muse_link.h"
-@@ -938,6 +941,21 @@ static size_t resample(resampler_t *r, const int16_t *in, size_t n, int16_t *out
++#include "stackchan_utf8.h"
+ #include "muse_settings.h"
+ #include "muse_wifi.h"
+ }
+@@ -938,6 +942,21 @@ static size_t resample(resampler_t *r, const int16_t *in, size_t n, int16_t *out
      return o;
  }
  
@@ -138,7 +155,7 @@ index 9c99dc0..fe0c4b9 100644
  /* ---- Turn: dictation ---- */
  
  static void turn_reset_streams(void)
-@@ -954,6 +972,10 @@ static void turn_reset_streams(void)
+@@ -954,6 +973,10 @@ static void turn_reset_streams(void)
  static void turn_finish(void)
  {
      turn_reset_streams();
@@ -149,7 +166,34 @@ index 9c99dc0..fe0c4b9 100644
      s_turn.phase = P_IDLE;
      s_turn.dict_id = s_turn.chat_id = 0;
      s_turn.tts_msg = -1;
-@@ -1496,11 +1518,223 @@ static void on_chat_ack(stream_t *s)
+@@ -1332,12 +1355,17 @@ static void append_text(msg_t &m, const char *text)
+         if (!m.len) {
+             full[0] = '\0';
+         }
+-        strlcat(full, text, TEXT_MAX);
++        /* Cut on a character boundary, and append nothing more once a piece
++         * didn't fit, so the text stays a whole-character prefix (#12). */
++        if (strlen(full) == m.len) {
++            utf8_strlcat(full, text, TEXT_MAX);
++        }
+     }
+     m.len += add;
+     size_t have = strlen(m.tail);
+     if (add >= sizeof(m.tail) - 1) {
+         strlcpy(m.tail, text + add - (sizeof(m.tail) - 1), sizeof(m.tail));
++        utf8_trim_head(m.tail);   /* don't start the caption mid-character */
+         return;
+     }
+     if (have + add >= sizeof(m.tail)) {
+@@ -1345,6 +1373,7 @@ static void append_text(msg_t &m, const char *text)
+         memmove(m.tail, m.tail + drop, have - drop + 1);
+     }
+     strlcat(m.tail, text, sizeof(m.tail));
++    utf8_trim_head(m.tail);
+ }
+ 
+ /*
+@@ -1496,11 +1525,228 @@ static void on_chat_ack(stream_t *s)
      mark(M_ACK);
      ESP_LOGI(TAG, "chat/stream ack: user message %s", s_turn.user_ids[0]);
      cJSON_Delete(root);
@@ -317,7 +361,12 @@ index 9c99dc0..fe0c4b9 100644
 +    }
 +    xStreamBufferReset(s_http_tts_sb);
 +    cJSON *o = cJSON_CreateObject();
-+    cJSON_AddStringToObject(o, "text", s_turn.texts + i * TEXT_MAX);
++    cJSON *text = cJSON_AddStringToObject(o, "text", s_turn.texts + i * TEXT_MAX);
++    if (text) {
++        /* The relay answers 400 to broken UTF-8 (#12); trim the copy, not the
++         * text, which may still be streaming in. */
++        utf8_trim_tail(text->valuestring);
++    }
 +    char *body = cJSON_PrintUnformatted(o);
 +    cJSON_Delete(o);
 +    if (!body) {
@@ -373,7 +422,7 @@ index 9c99dc0..fe0c4b9 100644
  static void start_tts(void)
  {
      if (s_turn.tts_msg >= 0) {
-@@ -1526,6 +1760,26 @@ static void start_tts(void)
+@@ -1526,6 +1772,26 @@ static void start_tts(void)
           * end. decode() plays it at the speaker's volume, captions following,
           * and finishes the message once it's drained.
           */
@@ -400,7 +449,7 @@ index 9c99dc0..fe0c4b9 100644
          m.pcm_start = s_turn.pcm_out;
          m.pcm_frames = (uint32_t)(m.len * MIC_RATE / TEXT_CHARS_PER_S);
          m.tts = TTS_ACTIVE;
-@@ -1985,6 +2239,9 @@ static void hatch_task(void *arg)
+@@ -1985,6 +2251,9 @@ static void hatch_task(void *arg)
          }
          if (s_turn.phase == P_WAIT_REPLY) {
              start_tts();
