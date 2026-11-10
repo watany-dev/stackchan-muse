@@ -5,6 +5,7 @@ GET  /health                                  →  ok
 
 127.0.0.1 에만 열고 nginx 를 거쳐 공개한다. 음성은 edge-tts(Microsoft Edge 의 온라인 음성)를 쓴다.
 """
+
 import hmac
 import logging
 import os
@@ -30,7 +31,7 @@ async def tts(request: web.Request) -> web.StreamResponse:
         body = await request.json()
         text = str(body["text"])
     except Exception:
-        return web.Response(status=400, text="need JSON {\"text\": ...}")
+        return web.Response(status=400, text='need JSON {"text": ...}')
     text = MARKDOWN.sub(" ", text).strip()[:MAX_CHARS]
     if not text:
         return web.Response(status=400, text="empty text")
@@ -48,8 +49,14 @@ async def tts(request: web.Request) -> web.StreamResponse:
             size += len(chunk["data"])
             await resp.write(chunk["data"])
     await resp.write_eof()
-    log.info("%d chars, %s: first audio %.2fs, done %.2fs, %d bytes", len(text), voice,
-             first or -1, time.monotonic() - t0, size)
+    log.info(
+        "%d chars, %s: first audio %.2fs, done %.2fs, %d bytes",
+        len(text),
+        voice,
+        first or -1,
+        time.monotonic() - t0,
+        size,
+    )
     return resp
 
 

@@ -1,0 +1,8 @@
+# shellcheck の設定(firmware/*.sh 用)。
+# env.sh は source される前提なので shebang がない。方言を bash に固定する(SC2148)。
+shell=bash
+# `. "$(dirname "$0")/env.sh"` をスクリプトと同じディレクトリから辿る(SC1091)。
+external-sources=true
+source-path=SCRIPTDIR
+# find_port の `ls /dev/cu.usbmodem*` はデバイス名を1つ拾うだけなので実害がない。
+disable=SC2012

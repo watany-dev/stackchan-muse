@@ -1,0 +1,98 @@
+# 数十秒で終わる検査を PR ごとに回す(#15)。ESP-IDF のビルドは別のワークフロー(#16)。
+name: lint
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: lint-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  shell:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install shfmt
+        run: sudo apt-get update -q && sudo apt-get install -y -q shfmt
+      - name: shellcheck
+        run: shellcheck --version && shellcheck -x firmware/*.sh
+      - name: shfmt
+        run: shfmt --version && shfmt -d firmware/   # 設定は .editorconfig
+
+  python:
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: tts-relay
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: tts-relay/requirements*.txt
+      - name: Install
+        run: pip install -r requirements.txt -r requirements-dev.txt
+      - name: ruff check
+        run: ruff check --output-format=github .
+      - name: ruff format
+        run: ruff format --check --diff .
+      - name: mypy
+        run: mypy server.py
+      - name: pip-audit
+        run: pip-audit -r requirements.txt
+
+  patch:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Fetch the SDK at SDK_REV (shallow)
+        run: |
+          . firmware/env.sh
+          echo "SDK_REV=$SDK_REV"
+          git init -q "$SDK_DIR"
+          git -C "$SDK_DIR" remote add origin "$SDK_REPO"
+          git -C "$SDK_DIR" fetch -q --depth 1 origin "$SDK_REV"
+          git -C "$SDK_DIR" checkout -q FETCH_HEAD
+      - name: git apply --check
+        run: |
+          . firmware/env.sh
+          git -C "$SDK_DIR" apply --check "$HERE/muse-stackchan.patch"
+      - name: setup.sh is idempotent
+        env:
+          FONT_HANGUL: "0"
+        run: |
+          ./firmware/setup.sh
+          ./firmware/setup.sh | tee second.log
+          grep -qx "Patch already applied." second.log
+
+  actions:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: actionlint
+        uses: docker://rhysd/actionlint:1.7.7
+        with:
+          args: -color
+
+  secrets:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      pull-requests: read   # gitleaks-action が PR のコミット一覧を読む
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: gitleaks
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITLEAKS_CONFIG: .gitleaks.toml
