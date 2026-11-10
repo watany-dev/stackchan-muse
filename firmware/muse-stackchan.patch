@@ -841,10 +841,10 @@ index 2ba3e31..9e5575f 100644
                  "Capture one still JPEG frame from the SenseCAP Watcher camera. "
 diff --git a/esp32/main/stackchan_head.c b/esp32/main/stackchan_head.c
 new file mode 100644
-index 0000000..d2f01df
+index 0000000..5407fca
 --- /dev/null
 +++ b/esp32/main/stackchan_head.c
-@@ -0,0 +1,334 @@
+@@ -0,0 +1,335 @@
 +/*
 + * Licensed under the Apache License, Version 2.0 (the "License");
 + * you may not use this file except in compliance with the License.
@@ -862,6 +862,7 @@ index 0000000..d2f01df
 +#include "stackchan_head.h"
 +
 +#include <math.h>
++#include <stdio.h>
 +#include <stdlib.h>
 +#include <string.h>
 +
@@ -1171,7 +1172,7 @@ index 0000000..d2f01df
 +    head_job_t job = {0};
 +    job.cmd = cmd;
 +    job.session_generation = session_generation;
-+    strcpy(job.request_id, request_id ? request_id : "");  // length checked above
++    snprintf(job.request_id, sizeof(job.request_id), "%s", request_id ? request_id : "");
 +    if (xQueueSend(s_jobs, &job, 0) != pdTRUE) {
 +        return head_cmd_error("busy", "the head is still moving; try again when it's done");
 +    }
