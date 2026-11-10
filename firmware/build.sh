@@ -5,7 +5,10 @@ set -euo pipefail
 . "$(dirname "$0")/env.sh"
 idf_env
 
-[ -d "$SDK_DIR/esp32" ] || { echo "Run ./setup.sh first." >&2; exit 1; }
+[ -d "$SDK_DIR/esp32" ] || {
+    echo "Run ./setup.sh first." >&2
+    exit 1
+}
 [ -f "$HERE/sdkconfig.local-token" ] || {
     echo "Missing sdkconfig.local-token: cp sdkconfig.local-token.example sdkconfig.local-token and add your token." >&2
     exit 1
@@ -29,7 +32,7 @@ else
 fi
 
 mkdir -p "$BUILD_DIR"
-rm -f "$BUILD_DIR/sdkconfig"   # a stale generated config would override the overlays
+rm -f "$BUILD_DIR/sdkconfig" # a stale generated config would override the overlays
 cd "$E"
 idf.py -B "$BUILD_DIR" -DIDF_TARGET=esp32s3 -DSDKCONFIG="$BUILD_DIR/sdkconfig" \
     -DSDKCONFIG_DEFAULTS="$DEFAULTS" build
