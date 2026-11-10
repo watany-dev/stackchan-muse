@@ -22,7 +22,9 @@ from typing import Any
 # collect
 # ---------------------------------------------------------------------------
 
-PART_ENTRY = struct.Struct("<2sBBII16sI")  # magic, type, subtype, offset, size, label, flags
+PART_ENTRY = struct.Struct(
+    "<2sBBII16sI"
+)  # magic, type, subtype, offset, size, label, flags
 PART_MAGIC = b"\xaa\x50"
 
 
@@ -31,11 +33,18 @@ def read_partitions(path: Path) -> dict[str, dict[str, int]]:
     data = path.read_bytes()
     parts: dict[str, dict[str, int]] = {}
     for off in range(0, len(data) - PART_ENTRY.size + 1, PART_ENTRY.size):
-        magic, ptype, subtype, offset, size, label, _flags = PART_ENTRY.unpack_from(data, off)
+        magic, ptype, subtype, offset, size, label, _flags = PART_ENTRY.unpack_from(
+            data, off
+        )
         if magic != PART_MAGIC:
             break
         name = label.split(b"\0", 1)[0].decode("ascii", "replace")
-        parts[name] = {"type": ptype, "subtype": subtype, "offset": offset, "size": size}
+        parts[name] = {
+            "type": ptype,
+            "subtype": subtype,
+            "offset": offset,
+            "size": size,
+        }
     return parts
 
 
@@ -85,7 +94,9 @@ def collect(args: argparse.Namespace) -> int:
     iram = layout.get("IRAM")
     # esp_idf_size は PSRAM の .bss(.ext_ram.bss)を "Flash Data" の .bss として数えることがある
     # (chip_info/esp32s3.yaml の注記)。どちらに出ても拾えるように両方を足す。
-    psram_bss = sum_parts(layout.get("External RAM"), is_bss) + sum_parts(layout.get("Flash Data"), is_bss)
+    psram_bss = sum_parts(layout.get("External RAM"), is_bss) + sum_parts(
+        layout.get("Flash Data"), is_bss
+    )
 
     build = Path(args.build_dir)
     parts = read_partitions(build / "partition_table" / "partition-table.bin")
@@ -110,14 +121,23 @@ def collect(args: argparse.Namespace) -> int:
         "srmodels_bin": srmodels.stat().st_size if srmodels.is_file() else None,
         "model_partition": model["size"] if model else None,
         "layout": {
-            name: {"used": m["used"], "total": m["total"], "parts": {k: v["size"] for k, v in m["parts"].items()}}
+            name: {
+                "used": m["used"],
+                "total": m["total"],
+                "parts": {k: v["size"] for k, v in m["parts"].items()},
+            }
             for name, m in layout.items()
         },
         "components": read_components(Path(args.lock)) if args.lock else {},
         "commit": os.environ.get("GITHUB_SHA", ""),
     }
     Path(args.out).write_text(json.dumps(metrics, indent=2, ensure_ascii=False) + "\n")
-    print(json.dumps({k: v for k, v in metrics.items() if k not in ("layout", "components")}, indent=2))
+    print(
+        json.dumps(
+            {k: v for k, v in metrics.items() if k not in ("layout", "components")},
+            indent=2,
+        )
+    )
     return 0
 
 
@@ -140,7 +160,13 @@ ROWS = [
 ]
 
 # 主要なコンポーネントだけサマリに出す(全部は metrics.json にある)
-KEY_COMPONENTS = ["espressif/esp-sr", "espressif/esp-dl", "lvgl/lvgl", "espressif/m5stack_core_s3", "idf"]
+KEY_COMPONENTS = [
+    "espressif/esp-sr",
+    "espressif/esp-dl",
+    "lvgl/lvgl",
+    "espressif/m5stack_core_s3",
+    "idf",
+]
 
 
 def derived(m: dict[str, Any]) -> dict[str, Any]:
@@ -176,7 +202,9 @@ def fmt_delta(cur: Any, base: Any) -> str:
     return f"{d:+,}"
 
 
-def check_budget(variant: str, m: dict[str, Any], budget: dict[str, Any]) -> tuple[list[str], list[str]]:
+def check_budget(
+    variant: str, m: dict[str, Any], budget: dict[str, Any]
+) -> tuple[list[str], list[str]]:
     """(失敗, 注意) のメッセージを返す。"""
     errors: list[str] = []
     notes: list[str] = []
@@ -184,20 +212,27 @@ def check_budget(variant: str, m: dict[str, Any], budget: dict[str, Any]) -> tup
     vb = {**defaults, **budget.get("variants", {}).get(variant, {})}
 
     ratio_max = vb.get("app_ratio_max")
-    if ratio_max is not None and m.get("app_ratio") is not None:
-        if m["app_ratio"] > ratio_max:
-            errors.append(
-                f"アプリ bin がパーティションの {m['app_ratio']:.1%} を使っています(上限 {ratio_max:.0%})"
-            )
+    if (
+        ratio_max is not None
+        and m.get("app_ratio") is not None
+        and m["app_ratio"] > ratio_max
+    ):
+        errors.append(
+            f"アプリ bin がパーティションの {m['app_ratio']:.1%} を使っています(上限 {ratio_max:.0%})"
+        )
 
     for key, label in (("diram_used", "DIRAM 静的使用量"), ("app_bin", "アプリ bin")):
         limit = vb.get(f"{key}_max")
         if limit is None:
             if key == "diram_used":
-                notes.append(f"{label} の上限が `firmware/ci/memory-budget.json` に未設定です")
+                notes.append(
+                    f"{label} の上限が `firmware/ci/memory-budget.json` に未設定です"
+                )
             continue
         if m.get(key) is not None and m[key] > limit:
-            errors.append(f"{label} {m[key]:,} が上限 {limit:,} を {m[key] - limit:,} バイト超えています")
+            errors.append(
+                f"{label} {m[key]:,} が上限 {limit:,} を {m[key] - limit:,} バイト超えています"
+            )
     return errors, notes
 
 
@@ -209,13 +244,19 @@ def report(args: argparse.Namespace) -> int:
 
     lines: list[str] = ["## ファームウェアのメモリ使用量", ""]
     if args.base_label:
-        lines.append(f"比較対象: {args.base_label}" if base else f"比較対象 {args.base_label} の計測値が見つかりませんでした(差分なし)")
+        lines.append(
+            f"比較対象: {args.base_label}"
+            if base
+            else f"比較対象 {args.base_label} の計測値が見つかりませんでした(差分なし)"
+        )
         lines.append("")
 
     failed = False
     missing = [v for v in expected if v not in cur]
     if missing:
-        lines.append(f"> [!WARNING]\n> 計測値がないバリアント: {', '.join(missing)}(ビルド失敗またはスキップ)")
+        lines.append(
+            f"> [!WARNING]\n> 計測値がないバリアント: {', '.join(missing)}(ビルド失敗またはスキップ)"
+        )
         lines.append("")
 
     all_errors: list[str] = []
@@ -249,9 +290,15 @@ def report(args: argparse.Namespace) -> int:
             lines.append(f"| {label} | " + " | ".join(cells) + " |")
         ratios = [cur[v].get("app_ratio") for v in variants]
         if any(r is not None for r in ratios):
-            lines.append("| アプリ bin / パーティション | " + " | ".join("—" if r is None else f"{r:.1%}" for r in ratios) + " |")
+            lines.append(
+                "| アプリ bin / パーティション | "
+                + " | ".join("—" if r is None else f"{r:.1%}" for r in ratios)
+                + " |"
+            )
         lines.append("")
-        lines.append("括弧内はベースとの差(バイト)。DIRAM は内部 RAM の静的配置で、実行時のヒープは含みません。")
+        lines.append(
+            "括弧内はベースとの差(バイト)。DIRAM は内部 RAM の静的配置で、実行時のヒープは含みません。"
+        )
         lines.append("")
 
         comps = {v: cur[v].get("components", {}) for v in variants}
@@ -260,7 +307,9 @@ def report(args: argparse.Namespace) -> int:
             lines += ["<details><summary>依存コンポーネントの版</summary>", ""]
             lines += ["| コンポーネント | 版 | ベース |", "|---|---|---|"]
             base_comps = base.get(variants[0], {}).get("components", {})
-            names = [n for n in KEY_COMPONENTS if n in first] + sorted(n for n in first if n not in KEY_COMPONENTS)
+            names = [n for n in KEY_COMPONENTS if n in first] + sorted(
+                n for n in first if n not in KEY_COMPONENTS
+            )
             for n in names:
                 bv = base_comps.get(n, "")
                 mark = " ⚠️" if bv and bv != first[n] else ""
@@ -269,13 +318,22 @@ def report(args: argparse.Namespace) -> int:
 
         lines += ["<details><summary>メモリ種別ごとの内訳</summary>", ""]
         for v in variants:
-            lines += [f"**{v}**", "", "| 種別 / セクション | サイズ | 差 |", "|---|---:|---:|"]
+            lines += [
+                f"**{v}**",
+                "",
+                "| 種別 / セクション | サイズ | 差 |",
+                "|---|---:|---:|",
+            ]
             blay = base.get(v, {}).get("layout", {})
             for name, mem in cur[v].get("layout", {}).items():
                 bmem = blay.get(name, {})
-                lines.append(f"| **{name}** used / total | {fmt(mem['used'])} / {fmt(mem['total'])} | {fmt_delta(mem['used'], bmem.get('used'))} |")
+                lines.append(
+                    f"| **{name}** used / total | {fmt(mem['used'])} / {fmt(mem['total'])} | {fmt_delta(mem['used'], bmem.get('used'))} |"
+                )
                 for sec, size in mem["parts"].items():
-                    lines.append(f"| {sec} | {fmt(size)} | {fmt_delta(size, bmem.get('parts', {}).get(sec))} |")
+                    lines.append(
+                        f"| {sec} | {fmt(size)} | {fmt_delta(size, bmem.get('parts', {}).get(sec))} |"
+                    )
             lines.append("")
         lines += ["</details>", ""]
 
@@ -298,7 +356,9 @@ def main() -> int:
 
     c = sub.add_parser("collect")
     c.add_argument("--variant", required=True)
-    c.add_argument("--size-json", required=True, help="idf.py size --format json2 の出力")
+    c.add_argument(
+        "--size-json", required=True, help="idf.py size --format json2 の出力"
+    )
     c.add_argument("--build-dir", required=True)
     c.add_argument("--project", default="muse-gadget")
     c.add_argument("--lock", help="dependencies.lock")
@@ -306,7 +366,9 @@ def main() -> int:
     c.set_defaults(func=collect)
 
     r = sub.add_parser("report")
-    r.add_argument("--current", required=True, help="今回の metrics.json があるディレクトリ")
+    r.add_argument(
+        "--current", required=True, help="今回の metrics.json があるディレクトリ"
+    )
     r.add_argument("--base", help="ベースの metrics.json があるディレクトリ")
     r.add_argument("--base-label", default="")
     r.add_argument("--budget", help="memory-budget.json")

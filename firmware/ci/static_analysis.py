@@ -28,17 +28,12 @@ from pathlib import Path
 
 SOURCE_EXT = {".c", ".cc", ".cpp"}
 HEADER_EXT = {".h", ".hpp"}
-TIDY_CHECKS = ",".join(
-    [
-        "-*",
-        "bugprone-*",
-        "cert-*",
-        "concurrency-*",
-        # 引数の並びが似ているという指摘で、C の API ではほぼ全関数に出るため外す
-        "-bugprone-easily-swappable-parameters",
-    ]
+# bugprone-easily-swappable-parameters は引数の並びが似ているという指摘で、
+# C の API ではほぼ全関数に出るため外す
+TIDY_CHECKS = "-*,bugprone-*,cert-*,concurrency-*,-bugprone-easily-swappable-parameters"
+DIAG_RE = re.compile(
+    r"^(?P<file>[^:\n]+):(?P<line>\d+):(?:(?P<col>\d+):)?\s*(?P<sev>warning|error|style|portability|performance|information):\s*(?P<msg>.*?)(?:\s*\[(?P<check>[^\]]+)\])?\s*$"
 )
-DIAG_RE = re.compile(r"^(?P<file>[^:\n]+):(?P<line>\d+):(?:(?P<col>\d+):)?\s*(?P<sev>warning|error|style|portability|performance|information):\s*(?P<msg>.*?)(?:\s*\[(?P<check>[^\]]+)\])?\s*$")
 
 
 @dataclass(frozen=True)
@@ -68,7 +63,7 @@ def added_lines(patch: Path) -> dict[str, set[int]]:
             if path == "/dev/null":
                 cur = None
                 continue
-            path = path[2:] if path.startswith("b/") else path
+            path = path.removeprefix("b/")
             if Path(path).suffix in SOURCE_EXT | HEADER_EXT:
                 cur = result.setdefault(path, set())
             else:
@@ -78,7 +73,7 @@ def added_lines(patch: Path) -> dict[str, set[int]]:
             m = re.match(r"@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@", raw)
             new_line = int(m.group(1)) if m else 0
             continue
-        if cur is None or raw.startswith("--- ") or raw.startswith("diff --git"):
+        if cur is None or raw.startswith(("--- ", "diff --git")):
             continue
         if raw.startswith("+"):
             cur.add(new_line)
@@ -120,12 +115,18 @@ class Context:
 def load_db(build_dir: Path) -> list[dict]:
     db = build_dir / "compile_commands.json"
     if not db.is_file():
-        raise SystemExit(f"{db} がありません。先にビルド(または reconfigure)してください")
+        raise SystemExit(
+            f"{db} がありません。先にビルド(または reconfigure)してください"
+        )
     return json.loads(db.read_text())
 
 
 def entry_args(entry: dict) -> list[str]:
-    return list(entry["arguments"]) if "arguments" in entry else shlex.split(entry["command"])
+    return (
+        list(entry["arguments"])
+        if "arguments" in entry
+        else shlex.split(entry["command"])
+    )
 
 
 def target_entries(ctx: Context, db: list[dict]) -> dict[str, dict]:
@@ -146,14 +147,25 @@ def parse_output(ctx: Context, tool: str, text: str, cwd: str | None) -> list[Fi
         rel = ctx.rel(m.group("file"), cwd)
         if not rel:
             continue
-        check = m.group("check") or ("compiler-error" if m.group("sev") == "error" else "")
-        found.append(Finding(tool, rel, int(m.group("line")), m.group("sev"), m.group("msg"), check))
+        check = m.group("check") or (
+            "compiler-error" if m.group("sev") == "error" else ""
+        )
+        found.append(
+            Finding(
+                tool, rel, int(m.group("line")), m.group("sev"), m.group("msg"), check
+            )
+        )
     return found
 
 
 def run(cmd: list[str], cwd: str | None = None) -> subprocess.CompletedProcess:
-    print("+", " ".join(shlex.quote(c) for c in cmd[:6]), "..." if len(cmd) > 6 else "", flush=True)
-    return subprocess.run(cmd, cwd=cwd, capture_output=True, text=True)
+    print(
+        "+",
+        " ".join(shlex.quote(c) for c in cmd[:6]),
+        "..." if len(cmd) > 6 else "",
+        flush=True,
+    )
+    return subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, check=False)
 
 
 def strip_output_flags(args: list[str]) -> list[str]:
@@ -174,17 +186,24 @@ def strip_output_flags(args: list[str]) -> list[str]:
 
 def run_gcc(ctx: Context, entries: dict[str, dict]) -> list[Finding]:
     found: list[Finding] = []
-    for rel, e in entries.items():
-        args = strip_output_flags(entry_args(e)) + ["-fsyntax-only", "-Wall", "-Wextra", "-fdiagnostics-color=never"]
+    for e in entries.values():
+        args = strip_output_flags(entry_args(e)) + [
+            "-fsyntax-only",
+            "-Wall",
+            "-Wextra",
+            "-fdiagnostics-color=never",
+        ]
         r = run(args, cwd=e.get("directory"))
         found += parse_output(ctx, "gcc", r.stdout + r.stderr, e.get("directory"))
     return found
 
 
-def run_cppcheck(ctx: Context, build_dir: Path, entries: dict[str, dict]) -> list[Finding]:
+def run_cppcheck(
+    ctx: Context, build_dir: Path, entries: dict[str, dict]
+) -> list[Finding]:
     found: list[Finding] = []
     db = str(build_dir / "compile_commands.json")
-    for rel, e in entries.items():
+    for e in entries.values():
         r = run(
             [
                 "cppcheck",
@@ -207,7 +226,7 @@ def run_clang_tidy(ctx: Context, clang_tidy: str, clang_build: Path) -> list[Fin
     db = load_db(clang_build)
     entries = target_entries(ctx, db)
     found: list[Finding] = []
-    for rel, e in entries.items():
+    for e in entries.values():
         r = run(
             [
                 clang_tidy,
@@ -222,23 +241,41 @@ def run_clang_tidy(ctx: Context, clang_tidy: str, clang_build: Path) -> list[Fin
             ],
             cwd=e.get("directory"),
         )
-        found += parse_output(ctx, "clang-tidy", r.stdout + r.stderr, e.get("directory"))
+        found += parse_output(
+            ctx, "clang-tidy", r.stdout + r.stderr, e.get("directory")
+        )
         if r.returncode != 0 and not r.stdout.strip():
             print(r.stderr[-4000:], file=sys.stderr)
     return found
 
 
-def run_clang_format(ctx: Context, clang_format: str, style_file: Path) -> list[Finding]:
+def run_clang_format(
+    ctx: Context, clang_format: str, style_file: Path
+) -> list[Finding]:
     found: list[Finding] = []
     for rel, lines in ctx.targets.items():
         path = ctx.sdk / rel
         if not path.is_file() or not lines:
             continue
-        cmd = [clang_format, f"--style=file:{style_file}", "--dry-run", "--ferror-limit=0"]
+        cmd = [
+            clang_format,
+            f"--style=file:{style_file}",
+            "--dry-run",
+            "--ferror-limit=0",
+        ]
         cmd += [f"--lines={a}:{b}" for a, b in line_ranges(lines)]
         r = run(cmd + [str(path)])
         for f in parse_output(ctx, "clang-format", r.stderr, None):
-            found.append(Finding(f.tool, f.file, f.line, "format", "書式が .clang-format と違います", "clang-format"))
+            found.append(
+                Finding(
+                    f.tool,
+                    f.file,
+                    f.line,
+                    "format",
+                    "書式が .clang-format と違います",
+                    "clang-format",
+                )
+            )
     return found
 
 
@@ -253,16 +290,37 @@ def load_baseline(path: Path | None) -> set[str]:
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
     ap.add_argument("--patch", required=True, type=Path)
-    ap.add_argument("--sdk", required=True, type=Path, help="パッチを当てた SDK のルート(esp32/ の親)")
-    ap.add_argument("--build-dir", required=True, type=Path, help="GCC でビルドしたディレクトリ")
-    ap.add_argument("--clang-build-dir", type=Path, help="IDF_TOOLCHAIN=clang で configure したディレクトリ")
+    ap.add_argument(
+        "--sdk",
+        required=True,
+        type=Path,
+        help="パッチを当てた SDK のルート(esp32/ の親)",
+    )
+    ap.add_argument(
+        "--build-dir", required=True, type=Path, help="GCC でビルドしたディレクトリ"
+    )
+    ap.add_argument(
+        "--clang-build-dir",
+        type=Path,
+        help="IDF_TOOLCHAIN=clang で configure したディレクトリ",
+    )
     ap.add_argument("--clang-tidy", default=os.environ.get("CLANG_TIDY", ""))
-    ap.add_argument("--clang-format", default=os.environ.get("CLANG_FORMAT", "clang-format"))
-    ap.add_argument("--format-style", type=Path, default=Path(__file__).with_name(".clang-format"))
+    ap.add_argument(
+        "--clang-format", default=os.environ.get("CLANG_FORMAT", "clang-format")
+    )
+    ap.add_argument(
+        "--format-style", type=Path, default=Path(__file__).with_name(".clang-format")
+    )
     ap.add_argument("--format-strict", action="store_true")
-    ap.add_argument("--baseline", type=Path, default=Path(__file__).with_name("static-analysis-baseline.txt"))
+    ap.add_argument(
+        "--baseline",
+        type=Path,
+        default=Path(__file__).with_name("static-analysis-baseline.txt"),
+    )
     ap.add_argument("--tools", default="gcc,cppcheck,clang-tidy,clang-format")
     ap.add_argument("--summary", default=os.environ.get("GITHUB_STEP_SUMMARY"))
     args = ap.parse_args()
@@ -285,7 +343,9 @@ def main() -> int:
         ran.append("cppcheck")
     if "clang-tidy" in tools:
         if not args.clang_tidy or not args.clang_build_dir:
-            raise SystemExit("clang-tidy には --clang-tidy と --clang-build-dir が必要です")
+            raise SystemExit(
+                "clang-tidy には --clang-tidy と --clang-build-dir が必要です"
+            )
         all_found += run_clang_tidy(ctx, args.clang_tidy, args.clang_build_dir)
         ran.append("clang-tidy")
     if "clang-format" in tools:
@@ -300,9 +360,19 @@ def main() -> int:
     findings = sorted(uniq.values(), key=lambda f: (f.file, f.line, f.tool))
     baseline = load_baseline(args.baseline)
 
-    blocking = [f for f in findings if f.key() not in baseline and (f.tool != "clang-format" or args.format_strict)]
+    blocking = [
+        f
+        for f in findings
+        if f.key() not in baseline and (f.tool != "clang-format" or args.format_strict)
+    ]
     known = [f for f in findings if f.key() in baseline]
-    advisory = [f for f in findings if f.tool == "clang-format" and not args.format_strict and f.key() not in baseline]
+    advisory = [
+        f
+        for f in findings
+        if f.tool == "clang-format"
+        and not args.format_strict
+        and f.key() not in baseline
+    ]
 
     lines = ["## 静的解析(パッチが足した行)", "", f"実行: {', '.join(ran)}", ""]
     if not blocking:
@@ -310,10 +380,17 @@ def main() -> int:
     else:
         lines.append(f"> [!CAUTION]\n> 新しい指摘が {len(blocking)} 件あります")
     lines.append("")
-    for title, items in (("指摘", blocking), ("既知(baseline)", known), ("書式(報告のみ)", advisory)):
+    for title, items in (
+        ("指摘", blocking),
+        ("既知(baseline)", known),
+        ("書式(報告のみ)", advisory),
+    ):
         if not items:
             continue
-        lines += [f"<details{' open' if items is blocking else ''}><summary>{title}: {len(items)} 件</summary>", ""]
+        lines += [
+            f"<details{' open' if items is blocking else ''}><summary>{title}: {len(items)} 件</summary>",
+            "",
+        ]
         lines += ["| 場所 | ツール | 内容 | チェック |", "|---|---|---|---|"]
         for f in items:
             msg = f.message.replace("|", "\\|")

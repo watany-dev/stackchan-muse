@@ -6,10 +6,10 @@
 set -euo pipefail
 OUT="${1:-$(cd "$(dirname "$0")/.." && pwd)/sdkconfig.local-token}"
 
-body="CIdummyTokenNotARealMuseSdkToken"   # 32 文字
+body="CIdummyTokenNotARealMuseSdkToken" # 32 文字
 while [ ${#body} -lt 42 ]; do body="${body}0"; done
-token="mgst_${body}A"                       # 最後の 1 文字は base64url の末尾として正しいもの
+token="mgst_${body}A" # 最後の 1 文字は base64url の末尾として正しいもの
 
-printf 'CONFIG_GADGET_SDK_TOKEN="%s"\n' "$token" > "$OUT"
+printf 'CONFIG_GADGET_SDK_TOKEN="%s"\n' "$token" >"$OUT"
 grep -Eq '^CONFIG_GADGET_SDK_TOKEN="mgst_[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048]"$' "$OUT"
 echo "Wrote dummy token to $OUT"
