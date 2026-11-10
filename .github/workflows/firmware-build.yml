@@ -1,0 +1,249 @@
+name: Firmware build & memory
+
+# ESP-IDF でファームウェアをビルドし、メモリ使用量をベースブランチと比べる(#16)。
+# ビルドは数分かかるので、ファームウェアに関わるファイルを変えたときだけ動かす。
+on:
+  pull_request:
+    paths:
+      - firmware/muse-stackchan.patch
+      - firmware/*.sh
+      - firmware/sdkconfig.*
+      - firmware/ci/**
+      - .github/workflows/firmware-build.yml
+  push:
+    branches: [main]
+    paths:
+      - firmware/muse-stackchan.patch
+      - firmware/*.sh
+      - firmware/sdkconfig.*
+      - firmware/ci/**
+      - .github/workflows/firmware-build.yml
+  # 依存コンポーネントの版が固定されるまで(#7)は、同じパッチでも結果が変わりうる。
+  # 週に一度 main をビルドして、比較用の計測値(artifact)を新しくしておく。
+  schedule:
+    - cron: "17 3 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  build:
+    name: Build (${{ matrix.wake }}, TTS ${{ matrix.tts }})
+    runs-on: ubuntu-latest
+    container: espressif/idf:v6.0.1
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # 静的解析は TTS を含む構成で 1 回だけ行う
+          - { wake: histackchan, tts: "on", analyze: true }
+          - { wake: histackchan, tts: "off", analyze: false }
+          - { wake: himuse, tts: "on", analyze: false }
+          - { wake: himuse, tts: "off", analyze: false }
+    defaults:
+      run:
+        shell: bash
+    env:
+      VARIANT: ${{ matrix.wake }}-tts-${{ matrix.tts }}
+      WAKE_WORD: ${{ matrix.wake }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # WAKE_WORD を切り替えられるのは日本語化(PR #1)以降の build.sh だけ。
+      # それより前の build.sh では himuse の構成が作れないので、そのバリアントは飛ばす。
+      - name: Check variant
+        id: variant
+        run: |
+          if [ "$WAKE_WORD" != histackchan ] && ! grep -q 'WAKE_WORD' firmware/build.sh; then
+            echo "::notice title=$VARIANT::この build.sh は WAKE_WORD に対応していないので飛ばします"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+          {
+            echo "BUILD_DIR=$GITHUB_WORKSPACE/build-ci"
+            echo "OUT_DIR=$GITHUB_WORKSPACE/out/$VARIANT"
+            echo "IDF_EXPORT=$IDF_PATH/export.sh"
+            echo "IDF_COMPONENT_CACHE_PATH=$GITHUB_WORKSPACE/.ci-cache/idf-components"
+            echo "npm_config_cache=$GITHUB_WORKSPACE/.ci-cache/npm"
+          } >> "$GITHUB_ENV"
+
+      - name: Install packages
+        if: steps.variant.outputs.skip != 'true'
+        env:
+          ANALYZE: ${{ matrix.analyze }}
+        run: |
+          # gen_cjk_font.sh は shasum(perl)を使う
+          pkgs="perl"
+          [ "$ANALYZE" = true ] && pkgs="$pkgs cppcheck clang-format"
+          apt-get update -qq
+          # shellcheck disable=SC2086
+          apt-get install -y -qq --no-install-recommends $pkgs
+
+      # 字幕フォントの生成(gen_cjk_font.sh)に npx を使う
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        if: steps.variant.outputs.skip != 'true'
+        with:
+          node-version: 22
+
+      # managed_components は setup.sh が clone する SDK の中にできるので直接は保存できない。
+      # 代わりにコンポーネントマネージャーのダウンロードキャッシュと npm のキャッシュを保存する。
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        if: steps.variant.outputs.skip != 'true'
+        with:
+          path: .ci-cache
+          key: firmware-deps-${{ hashFiles('firmware/muse-stackchan.patch', 'firmware/env.sh') }}
+          restore-keys: firmware-deps-
+
+      - name: Setup SDK (clone, patch, font)
+        if: steps.variant.outputs.skip != 'true'
+        run: ./firmware/setup.sh
+
+      - name: Configure (dummy token, TTS)
+        if: steps.variant.outputs.skip != 'true'
+        env:
+          TTS: ${{ matrix.tts }}
+        run: |
+          ./firmware/ci/dummy-token.sh
+          if [ "$TTS" = on ]; then
+            cp firmware/sdkconfig.local-tts.example firmware/sdkconfig.local-tts
+          else
+            rm -f firmware/sdkconfig.local-tts
+          fi
+
+      - name: Build
+        if: steps.variant.outputs.skip != 'true'
+        run: ./firmware/build.sh
+
+      - name: Measure size
+        if: steps.variant.outputs.skip != 'true'
+        run: |
+          # shellcheck disable=SC1090
+          . "$IDF_EXPORT" > /dev/null
+          mkdir -p "$OUT_DIR"
+          cd firmware/muse-gadget-sdk/esp32
+          idf() { idf.py -B "$BUILD_DIR" -DIDF_TARGET=esp32s3 -DSDKCONFIG="$BUILD_DIR/sdkconfig" "$@"; }
+          idf size --format json2 --output-file "$OUT_DIR/size.json"
+          idf size-components --format json2 --output-file "$OUT_DIR/size-components.json"
+          idf size --output-file "$OUT_DIR/size.txt"
+          [ -f dependencies.lock ] && cp dependencies.lock "$OUT_DIR/dependencies.lock"
+          python "$GITHUB_WORKSPACE/firmware/ci/size_report.py" collect \
+            --variant "$VARIANT" --size-json "$OUT_DIR/size.json" --build-dir "$BUILD_DIR" \
+            --lock dependencies.lock --out "$OUT_DIR/metrics.json"
+          cat "$OUT_DIR/size.txt"
+
+      # ダミーでもトークンはバイナリに埋め込まれるので、.bin や sdkconfig は上げない
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: steps.variant.outputs.skip != 'true'
+        with:
+          name: firmware-size-${{ env.VARIANT }}
+          path: |
+            out/${{ env.VARIANT }}/*.json
+            out/${{ env.VARIANT }}/*.txt
+            out/${{ env.VARIANT }}/dependencies.lock
+          retention-days: 90
+          if-no-files-found: error
+
+      # ---- 静的解析(パッチが足した行だけ) ----
+
+      # clang-tidy は Xtensa を知っている esp-clang で、IDF_TOOLCHAIN=clang の
+      # compile_commands.json を使って動かす(GCC 用のフラグをそのまま渡せないため)
+      - name: Configure with esp-clang
+        if: matrix.analyze && steps.variant.outputs.skip != 'true'
+        run: |
+          python "$IDF_PATH/tools/idf_tools.py" install esp-clang
+          # shellcheck disable=SC1090
+          . "$IDF_EXPORT" > /dev/null
+          CLANG_BUILD="$GITHUB_WORKSPACE/build-ci-clang"
+          mkdir -p "$CLANG_BUILD"
+          cp "$BUILD_DIR/sdkconfig" "$CLANG_BUILD/sdkconfig"
+          cd firmware/muse-gadget-sdk/esp32
+          idf.py -B "$CLANG_BUILD" -DIDF_TARGET=esp32s3 -DIDF_TOOLCHAIN=clang \
+            -DSDKCONFIG="$CLANG_BUILD/sdkconfig" reconfigure
+          tidy="$(command -v clang-tidy || true)"
+          case "$tidy" in
+            */esp-clang/*) ;;
+            *) tidy="$(find "${IDF_TOOLS_PATH:-$HOME/.espressif}/tools/esp-clang" -name clang-tidy -type f | head -1)" ;;
+          esac
+          [ -x "$tidy" ] || { echo "esp-clang の clang-tidy が見つかりません" >&2; exit 1; }
+          "$tidy" --version
+          echo "CLANG_TIDY=$tidy" >> "$GITHUB_ENV"
+          echo "CLANG_BUILD=$CLANG_BUILD" >> "$GITHUB_ENV"
+
+      - name: Static analysis
+        if: matrix.analyze && steps.variant.outputs.skip != 'true'
+        run: |
+          # shellcheck disable=SC1090
+          . "$IDF_EXPORT" > /dev/null
+          cppcheck --version
+          clang-format --version
+          python firmware/ci/static_analysis.py \
+            --patch firmware/muse-stackchan.patch \
+            --sdk firmware/muse-gadget-sdk \
+            --build-dir "$BUILD_DIR" \
+            --clang-build-dir "$CLANG_BUILD" \
+            --clang-tidy "$CLANG_TIDY" \
+            --clang-format "$(command -v clang-format)"
+
+  report:
+    name: Memory report
+    needs: build
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read # ベースブランチの artifact を読む
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Download this run's measurements
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: firmware-size-*
+          path: current
+
+      # PR ではベースブランチ、main では一つ前の main の計測値と比べる
+      - name: Download base measurements
+        id: base
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BASE_BRANCH: ${{ github.base_ref || github.ref_name }}
+        run: |
+          variants="histackchan-tts-on histackchan-tts-off"
+          grep -q 'WAKE_WORD' firmware/build.sh && variants="$variants himuse-tts-on himuse-tts-off"
+          echo "expect=$(echo "$variants" | tr ' ' ',')" >> "$GITHUB_OUTPUT"
+          mkdir -p base
+          for v in $variants; do
+            run_id="$(gh api "repos/$GITHUB_REPOSITORY/actions/artifacts?name=firmware-size-$v&per_page=100" --jq "
+              [.artifacts[]
+                | select(.expired == false
+                    and .workflow_run.head_branch == \"$BASE_BRANCH\"
+                    and .workflow_run.head_repository_id == .workflow_run.repository_id
+                    and .workflow_run.id != $GITHUB_RUN_ID)]
+              | sort_by(.created_at) | reverse | .[0].workflow_run.id // empty")" || run_id=""
+            if [ -n "$run_id" ]; then
+              echo "$v: run $run_id"
+              gh run download "$run_id" -R "$GITHUB_REPOSITORY" -n "firmware-size-$v" -D "base/$v" || true
+            else
+              echo "$v: $BASE_BRANCH の計測値なし"
+            fi
+          done
+
+      - name: Report and check budget
+        env:
+          BASE_LABEL: "`${{ github.base_ref || github.ref_name }}`"
+          EXPECT: ${{ steps.base.outputs.expect }}
+        run: |
+          python3 firmware/ci/size_report.py report \
+            --current current --base base --base-label "$BASE_LABEL" \
+            --budget firmware/ci/memory-budget.json --expect "$EXPECT"
