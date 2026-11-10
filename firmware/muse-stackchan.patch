@@ -713,15 +713,22 @@ index 0000000..783494e
 +CONFIG_SR_MN_EN_NONE=y
 +CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions_muse_stackchan.csv"
 diff --git a/esp32/main/CMakeLists.txt b/esp32/main/CMakeLists.txt
-index 22fca2f..b01e015 100644
+index 22fca2f..f747d67 100644
 --- a/esp32/main/CMakeLists.txt
 +++ b/esp32/main/CMakeLists.txt
-@@ -85,6 +85,10 @@ if(CONFIG_HOMEHUB_LED_BACKEND_DEVKIT_GPIO27 OR CONFIG_HOMEHUB_LED_BACKEND_VOICE_
+@@ -85,6 +85,17 @@ if(CONFIG_HOMEHUB_LED_BACKEND_DEVKIT_GPIO27 OR CONFIG_HOMEHUB_LED_BACKEND_VOICE_
      list(APPEND GADGET_REQUIRES led_strip)
  endif()
  
 +if(CONFIG_HOMEHUB_STACKCHAN_HEAD)
-+    list(APPEND GADGET_SRCS "stackchan_head.c")
++    # The stackchan_angle/head_cmd/scs files come from firmware/src in the
++    # stackchan-muse repo (build.sh copies them here).
++    list(APPEND GADGET_SRCS
++        "stackchan_head.c"
++        "stackchan_angle.c"
++        "stackchan_head_cmd.c"
++        "stackchan_scs.c"
++    )
 +endif()
 +
  if(CONFIG_HOMEHUB_SENSECAP_SENSORS)
@@ -827,10 +834,10 @@ index 2ba3e31..9e5575f 100644
                  "Capture one still JPEG frame from the SenseCAP Watcher camera. "
 diff --git a/esp32/main/stackchan_head.c b/esp32/main/stackchan_head.c
 new file mode 100644
-index 0000000..8544870
+index 0000000..587911c
 --- /dev/null
 +++ b/esp32/main/stackchan_head.c
-@@ -0,0 +1,396 @@
+@@ -0,0 +1,311 @@
 +/*
 + * Licensed under the Apache License, Version 2.0 (the "License");
 + * you may not use this file except in compliance with the License.
@@ -850,6 +857,11 @@ index 0000000..8544870
 +#include <math.h>
 +#include <stdlib.h>
 +#include <string.h>
++
++// Copied in from firmware/src by build.sh; tested on the host there.
++#include "stackchan_angle.h"
++#include "stackchan_head_cmd.h"
++#include "stackchan_scs.h"
 +
 +#include "driver/i2c_master.h"
 +#include "driver/uart.h"
@@ -879,26 +891,10 @@ index 0000000..8544870
 +#define PY32_REG_PD_L   0x0B
 +#define PY32_SERVO_PIN  0   // VM EN
 +
-+#define SCS_INST_READ   0x02
-+#define SCS_INST_WRITE  0x03
 +#define SCS_REG_TORQUE  40
 +#define SCS_REG_GOAL    42  // position, time, speed: 3 big-endian words
 +#define SCS_REG_POS     56
 +#define SCS_TIMEOUT_MS  10
-+
-+#define YAW_ID          1
-+#define PITCH_ID        2
-+#define YAW_ZERO_RAW    460
-+#define PITCH_ZERO_RAW  620
-+#define YAW_MIN_DEG     (-128.0f)
-+#define YAW_MAX_DEG     128.0f
-+#define PITCH_MIN_DEG   0.0f
-+#define PITCH_MAX_DEG   90.0f
-+#define RAW_PER_DEG     3.2f  // one step is 0.3125 degrees
-+
-+#define DURATION_MIN_MS 100
-+#define DURATION_MAX_MS 3000
-+#define DURATION_DEF_MS 600
 +
 +// ---- Low-level buses --------------------------------------------------------
 +
@@ -985,53 +981,34 @@ index 0000000..8544870
 +    return ESP_OK;
 +}
 +
-+// One SCS request: FF FF id len inst [addr data...] ~sum. Reads the status
-+// reply (FF FF id len err [data...] ~sum) into reply_data when given. Returns
-+// the number of data bytes read, or -1.
++// One SCS request (see stackchan_scs.h). Waits for the status reply and
++// copies its data into reply_data, which must be exactly reply_n bytes: a
++// write answers with none, a read with what was asked. Returns reply_n, or -1.
 +static int scs_request(uint8_t id, uint8_t inst, uint8_t addr,
 +                       const uint8_t *data, uint8_t n,
 +                       uint8_t *reply_data, uint8_t reply_n) {
-+    uint8_t pkt[16];
-+    uint8_t len = (uint8_t)(n + 3);
-+    pkt[0] = 0xFF; pkt[1] = 0xFF; pkt[2] = id; pkt[3] = len; pkt[4] = inst;
-+    pkt[5] = addr;
-+    uint8_t sum = id + len + inst + addr;
-+    for (uint8_t i = 0; i < n; i++) {
-+        pkt[6 + i] = data[i];
-+        sum += data[i];
-+    }
-+    pkt[6 + n] = (uint8_t)~sum;
++    uint8_t pkt[SCS_PKT_MAX];
++    size_t pkt_n = scs_build(id, inst, addr, data, n, pkt, sizeof(pkt));
++    if (pkt_n == 0) return -1;
 +
 +    uart_flush_input(HEAD_UART);
-+    uart_write_bytes(HEAD_UART, pkt, 7 + n);
++    uart_write_bytes(HEAD_UART, pkt, pkt_n);
 +    uart_wait_tx_done(HEAD_UART, pdMS_TO_TICKS(SCS_TIMEOUT_MS));
 +
-+    // Find the FF FF header, then id, len, err, data, checksum.
-+    uint8_t b = 0, prev = 0;
++    uint8_t rx[64];
++    size_t rx_n = 0;
++    scs_reply_t reply;
 +    int64_t deadline = esp_timer_get_time() + SCS_TIMEOUT_MS * 1000;
 +    for (;;) {
++        scs_parse_result_t r = scs_parse(rx, rx_n, &reply, NULL);
++        if (r == SCS_PARSE_OK) break;
++        if (r == SCS_PARSE_BAD || rx_n == sizeof(rx)) return -1;
 +        if (esp_timer_get_time() > deadline) return -1;
-+        if (uart_read_bytes(HEAD_UART, &b, 1, pdMS_TO_TICKS(2)) != 1) continue;
-+        if (prev == 0xFF && b == 0xFF) break;
-+        prev = b;
++        if (uart_read_bytes(HEAD_UART, rx + rx_n, 1, pdMS_TO_TICKS(2)) == 1) rx_n++;
 +    }
-+    uint8_t head[3];
-+    if (uart_read_bytes(HEAD_UART, head, 3, pdMS_TO_TICKS(SCS_TIMEOUT_MS)) != 3) return -1;
-+    if (head[0] != id || head[1] < 2) return -1;
-+    uint8_t data_n = head[1] - 2;
-+    uint8_t body[8];
-+    if (data_n > sizeof(body)) return -1;
-+    if (data_n && uart_read_bytes(HEAD_UART, body, data_n, pdMS_TO_TICKS(SCS_TIMEOUT_MS)) != data_n) return -1;
-+    uint8_t chk;
-+    if (uart_read_bytes(HEAD_UART, &chk, 1, pdMS_TO_TICKS(SCS_TIMEOUT_MS)) != 1) return -1;
-+    uint8_t calc = head[0] + head[1] + head[2];
-+    for (uint8_t i = 0; i < data_n; i++) calc += body[i];
-+    if ((uint8_t)~calc != chk) return -1;
-+    if (reply_data) {
-+        if (data_n != reply_n) return -1;
-+        memcpy(reply_data, body, data_n);
-+    }
-+    return data_n;
++    if (reply.id != id || reply.n != reply_n) return -1;
++    if (reply_n) memcpy(reply_data, reply.data, reply_n);
++    return reply_n;
 +}
 +
 +static bool scs_torque(uint8_t id, bool on) {
@@ -1054,20 +1031,7 @@ index 0000000..8544870
 +    return (d[0] << 8) | d[1];
 +}
 +
-+// ---- Angles -----------------------------------------------------------------
-+
-+static float clampf(float v, float lo, float hi) {
-+    return v < lo ? lo : (v > hi ? hi : v);
-+}
-+
-+static int deg_to_raw(int zero, float deg) {
-+    int raw = zero + (int)lroundf(deg * RAW_PER_DEG);
-+    return raw < 0 ? 0 : (raw > 1000 ? 1000 : raw);
-+}
-+
-+static float raw_to_deg(int zero, int raw) {
-+    return (raw - zero) / RAW_PER_DEG;
-+}
++// ---- Angles (deg_to_raw and friends are in stackchan_angle.c) ------------
 +
 +// Moves both axes and waits for the move to finish. Torque stays on so the
 +// head holds its pose.
@@ -1091,26 +1055,12 @@ index 0000000..8544870
 +
 +// ---- Commands ---------------------------------------------------------------
 +
-+typedef enum { HEAD_MOVE, HEAD_GESTURE, HEAD_GET } head_op_t;
-+typedef enum { GESTURE_NOD, GESTURE_SHAKE, GESTURE_LOOK_AROUND, GESTURE_HOME } gesture_t;
-+
++// Argument checks are in stackchan_head_cmd.c.
 +typedef struct {
-+    head_op_t op;
-+    float yaw, pitch;
-+    int duration_ms;
-+    gesture_t gesture;
++    head_cmd_t cmd;
 +    noise_ctrl_session_generation_t session_generation;
 +    char request_id[64];
 +} head_job_t;
-+
-+static cJSON *error_result(const char *code, const char *message) {
-+    cJSON *r = cJSON_CreateObject();
-+    cJSON_AddBoolToObject(r, "ok", false);
-+    cJSON *e = cJSON_AddObjectToObject(r, "error");
-+    cJSON_AddStringToObject(e, "code", code);
-+    cJSON_AddStringToObject(e, "message", message);
-+    return r;
-+}
 +
 +static bool run_gesture(gesture_t g) {
 +    float y0 = 0, p0 = 20;
@@ -1146,16 +1096,17 @@ index 0000000..8544870
 +
 +    xSemaphoreTake(s_lock, portMAX_DELAY);
 +    if (head_init() != ESP_OK) {
-+        result = error_result("hardware", "servo bus did not come up; is the StackChan base attached?");
++        result = head_cmd_error("hardware", "servo bus did not come up; is the StackChan base attached?");
 +    } else {
 +        bool ok = true;
-+        if (job->op == HEAD_MOVE) ok = head_move(job->yaw, job->pitch, job->duration_ms);
-+        else if (job->op == HEAD_GESTURE) ok = run_gesture(job->gesture);
++        const head_cmd_t *cmd = &job->cmd;
++        if (cmd->op == HEAD_MOVE) ok = head_move(cmd->yaw, cmd->pitch, cmd->duration_ms);
++        else if (cmd->op == HEAD_GESTURE) ok = run_gesture(cmd->gesture);
 +
 +        float yaw = 0, pitch = 0;
 +        bool read_ok = head_read(&yaw, &pitch);
 +        if (!ok || !read_ok) {
-+            result = error_result("servo_no_reply", "a neck servo did not answer");
++            result = head_cmd_error("servo_no_reply", "a neck servo did not answer");
 +        } else {
 +            result = cJSON_CreateObject();
 +            cJSON_AddBoolToObject(result, "ok", true);
@@ -1166,62 +1117,33 @@ index 0000000..8544870
 +    }
 +    xSemaphoreGive(s_lock);
 +
-+    ESP_LOGI(TAG, "op %d done: %s", job->op,
++    ESP_LOGI(TAG, "op %d done: %s", job->cmd.op,
 +             cJSON_IsTrue(cJSON_GetObjectItem(result, "ok")) ? "ok" : "error");
 +    noise_ctrl_send_command_result(job->session_generation, job->request_id, result);
 +    free(job);
 +    vTaskDelete(NULL);
 +}
 +
-+static bool number_param(cJSON *params, const char *key, float *out) {
-+    cJSON *item = params ? cJSON_GetObjectItem(params, key) : NULL;
-+    if (!cJSON_IsNumber(item) || !isfinite(item->valuedouble)) return false;
-+    *out = (float)item->valuedouble;
-+    return true;
-+}
-+
 +cJSON *stackchan_head_command(const char *command, cJSON *params,
 +                              const char *request_id,
 +                              noise_ctrl_session_generation_t session_generation) {
-+    head_op_t op;
-+    if (strcmp(command, "head.move") == 0) op = HEAD_MOVE;
-+    else if (strcmp(command, "head.gesture") == 0) op = HEAD_GESTURE;
-+    else if (strcmp(command, "head.get") == 0) op = HEAD_GET;
-+    else return NULL;
++    head_cmd_t cmd;
++    head_cmd_status_t st = head_cmd_parse(command, params, &cmd);
++    if (st == HEAD_CMD_NOT_HEAD) return NULL;
++    if (st != HEAD_CMD_OK) return head_cmd_status_error(st);
 +
 +    if (!s_lock) s_lock = xSemaphoreCreateMutex();
-+    if (!s_lock) return error_result("out_of_memory", "failed to allocate");
++    if (!s_lock) return head_cmd_error("out_of_memory", "failed to allocate");
 +
 +    head_job_t *job = calloc(1, sizeof(*job));
-+    if (!job) return error_result("out_of_memory", "failed to allocate");
-+    job->op = op;
++    if (!job) return head_cmd_error("out_of_memory", "failed to allocate");
++    job->cmd = cmd;
 +    job->session_generation = session_generation;
 +    strncpy(job->request_id, request_id ? request_id : "", sizeof(job->request_id) - 1);
 +
-+    if (op == HEAD_MOVE) {
-+        if (!number_param(params, "yaw", &job->yaw) || !number_param(params, "pitch", &job->pitch)) {
-+            free(job);
-+            return error_result("missing_param", "yaw and pitch are required numbers");
-+        }
-+        float d = DURATION_DEF_MS;
-+        number_param(params, "duration_ms", &d);
-+        job->duration_ms = (int)clampf(d, DURATION_MIN_MS, DURATION_MAX_MS);
-+    } else if (op == HEAD_GESTURE) {
-+        cJSON *name = params ? cJSON_GetObjectItem(params, "name") : NULL;
-+        const char *n = cJSON_IsString(name) ? name->valuestring : "";
-+        if (strcmp(n, "nod") == 0) job->gesture = GESTURE_NOD;
-+        else if (strcmp(n, "shake") == 0) job->gesture = GESTURE_SHAKE;
-+        else if (strcmp(n, "look_around") == 0) job->gesture = GESTURE_LOOK_AROUND;
-+        else if (strcmp(n, "home") == 0) job->gesture = GESTURE_HOME;
-+        else {
-+            free(job);
-+            return error_result("invalid_param", "name must be nod, shake, look_around or home");
-+        }
-+    }
-+
 +    if (xTaskCreate(head_task, "head", 4096, job, 4, NULL) != pdPASS) {
 +        free(job);
-+        return error_result("out_of_memory", "failed to start head task");
++        return head_cmd_error("out_of_memory", "failed to start head task");
 +    }
 +    cJSON *async = cJSON_CreateObject();
 +    cJSON_AddBoolToObject(async, "_async", true);

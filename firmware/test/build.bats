@@ -12,7 +12,7 @@ VALID_TOKEN="mgst_$(printf 'a%.0s' {1..42})A"
 setup() {
     setup_firmware
     E="$WORK/muse-gadget-sdk/esp32" # default SDK_DIR, under the path with a space
-    mkdir -p "$E/devices"
+    mkdir -p "$E/devices" "$E/main"
     export BUILD_DIR="$BATS_TEST_TMPDIR/build"
     export IDF_EXPORT="$BATS_TEST_TMPDIR/export.sh"
     : >"$IDF_EXPORT"
@@ -41,6 +41,15 @@ defaults_arg() {
     run calls idf.py
     assert_output --partial "[-B] [$BUILD_DIR] [-DIDF_TARGET=esp32s3] [-DSDKCONFIG=$BUILD_DIR/sdkconfig]"
     assert_output --regexp '\[build\]$'
+}
+
+@test "the host-tested sources in src/ are copied into the SDK's main component" {
+    write_token "$VALID_TOKEN"
+    run "$WORK/build.sh"
+    assert_success
+    for f in "$WORK"/src/*.c "$WORK"/src/*.h; do
+        cmp "$f" "$E/main/$(basename "$f")" || fail "$(basename "$f") not copied"
+    done
 }
 
 @test "missing sdkconfig.local-token: exit 1 with a hint, idf.py not run" {

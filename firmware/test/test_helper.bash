@@ -13,6 +13,7 @@ setup_firmware() {
     WORK="$BATS_TEST_TMPDIR/My Projects/firmware"
     mkdir -p "$WORK"
     cp "$FIRMWARE_SRC"/*.sh "$WORK"/
+    cp -R "$FIRMWARE_SRC/src" "$WORK"/ # build.sh copies these into the SDK
 
     STUBS="$BATS_TEST_TMPDIR/stubs"
     mkdir -p "$STUBS"
