@@ -1,3 +1,11 @@
 # 静的解析の既知の指摘。ここに書いた指摘は CI を失敗させない(サマリには「既知」として出る)。
 # 形式: ツール|ファイル(SDK ルートからの相対パス)|チェック名
 # 行番号は書かない。直したら行を消す。
+
+# CI 導入時(#16)にあった指摘。いずれも実害はないと判断したもの。直すときは #13 と合わせて。
+# servo_power_on の `if ((err = ...) != ESP_OK)` の連続
+clang-tidy|esp32/main/stackchan_head.c|bugprone-assignment-in-if-condition
+# SCS_TIMEOUT_MS * 1000 は 10000 で int に収まる
+clang-tidy|esp32/main/stackchan_head.c|bugprone-implicit-widening-of-multiplication-result
+# raw_to_deg の (raw - zero) は 0..1023 程度の整数で、float に正確に入る
+clang-tidy|esp32/main/stackchan_head.c|bugprone-narrowing-conversions
