@@ -38,7 +38,7 @@ case "$WAKE_WORD" in
         ;;
     histackchan)
         printf '%s\n' '# CONFIG_SR_WN_WN10_HIMUSE is not set' 'CONFIG_SR_WN_WN9L_HISTACKCHAN_TTS3=y' \
-            > "$E/devices/sdkconfig.local-wake"
+            >"$E/devices/sdkconfig.local-wake"
         DEFAULTS="$DEFAULTS;devices/sdkconfig.local-wake"
         ;;
     *)
