@@ -1,5 +1,5 @@
 # shfmt はこの設定を読む(CI では `shfmt -d firmware/`)。
-[*.sh]
+[*.{sh,bash,bats}]
 indent_style = space
 indent_size = 4
 switch_case_indent = true
