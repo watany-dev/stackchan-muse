@@ -48,6 +48,18 @@ static void test_examples(void) {
     cJSON_Delete(r);
 }
 
+// request_id: up to HEAD_REQUEST_ID_MAX bytes fits, one more doesn't (#13).
+static void test_request_id(void) {
+    char id[HEAD_REQUEST_ID_MAX + 2];
+    CHECK(head_cmd_request_id_ok(NULL), "NULL id");
+    CHECK(head_cmd_request_id_ok(""), "empty id");
+    for (size_t n = 0; n <= HEAD_REQUEST_ID_MAX + 1; n++) {
+        memset(id, 'a', n);
+        id[n] = '\0';
+        CHECK(head_cmd_request_id_ok(id) == (n <= HEAD_REQUEST_ID_MAX), "id of %zu bytes", n);
+    }
+}
+
 static cJSON *random_value(int depth);
 
 static char *random_string(void) {
@@ -155,6 +167,7 @@ static void prop_gesture_names(void) {
 int main(void) {
     prop_init();
     test_examples();
+    test_request_id();
     prop_any_params();
     prop_gesture_names();
     return prop_done("test_head_cmd");
