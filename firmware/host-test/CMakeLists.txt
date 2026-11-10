@@ -49,7 +49,8 @@ function(stackchan_libs suffix)
     add_library(stackchan_core${suffix} STATIC
         ${SRC}/stackchan_scs.c
         ${SRC}/stackchan_angle.c
-        ${SRC}/stackchan_head_cmd.c)
+        ${SRC}/stackchan_head_cmd.c
+        ${SRC}/stackchan_utf8.c)
     target_include_directories(stackchan_core${suffix} PUBLIC ${SRC})
     target_compile_options(stackchan_core${suffix} PRIVATE ${ARGN})
     target_link_libraries(stackchan_core${suffix} PUBLIC cjson${suffix} m)
@@ -58,7 +59,7 @@ endfunction()
 stackchan_libs("")
 
 enable_testing()
-foreach(t test_scs test_angle test_head_cmd)
+foreach(t test_scs test_angle test_head_cmd test_utf8)
     add_executable(${t} ${t}.c)
     target_link_libraries(${t} PRIVATE stackchan_core)
     add_test(NAME ${t} COMMAND ${t})
