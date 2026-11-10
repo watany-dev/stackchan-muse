@@ -1191,16 +1191,19 @@ index 0000000..da70d8a
 +version: 3.0.0
 diff --git a/esp32/devices/sdkconfig.muse-stackchan b/esp32/devices/sdkconfig.muse-stackchan
 new file mode 100644
-index 0000000..783494e
+index 0000000..bffa522
 --- /dev/null
 +++ b/esp32/devices/sdkconfig.muse-stackchan
-@@ -0,0 +1,15 @@
+@@ -0,0 +1,18 @@
 +# M5Stack StackChan: a CoreS3 on the StackChan body. Load after
 +# devices/sdkconfig.muse-m5stack-cores3 to add the neck servo commands and
 +# Japanese captions (the SDK's CJK caption font already has kana and kanji;
 +# setup.sh can regenerate it with Hangul too).
 +CONFIG_HOMEHUB_STACKCHAN_HEAD=y
 +CONFIG_MUSE_CJK_FONT=y
++# BLE stays off after setup, so its memory goes to TLS and TTS; turning on
++# "Phone setup" restarts once with BLE up.
++CONFIG_MUSE_BLE_ON_DEMAND=y
 +
 +# "Hi, Muse" wake word: ESP-SR WakeNet10 in a "model" partition at 0x830000.
 +# For "Hi, Stack Chan" instead, build with WAKE_WORD=histackchan (build.sh
@@ -1233,13 +1236,14 @@ index 22fca2f..f747d67 100644
      list(APPEND GADGET_SRCS "sensecap_sensors.c")
  endif()
 diff --git a/esp32/main/Kconfig.projbuild b/esp32/main/Kconfig.projbuild
-index d0fb1d8..66f5e81 100644
+index d0fb1d8..f66ba20 100644
 --- a/esp32/main/Kconfig.projbuild
 +++ b/esp32/main/Kconfig.projbuild
-@@ -264,6 +264,16 @@ menu "ESP32 Device SDK"
+@@ -264,7 +264,27 @@ menu "ESP32 Device SDK"
              switch is on, the button keeps its setup role (tap to confirm
              pairing, hold to reset).
  
+-    config HOMEHUB_SENSECAP_SENSORS
 +    config HOMEHUB_STACKCHAN_HEAD
 +        bool "StackChan neck servos (head.move, head.gesture, head.get)"
 +        depends on MUSE_BOARD_M5STACK_CORES3
@@ -1250,14 +1254,25 @@ index d0fb1d8..66f5e81 100644
 +            PY32 IO expander at 0x6F. Advertises head.move, head.gesture and
 +            head.get so Muse can turn the head.
 +
-     config HOMEHUB_SENSECAP_SENSORS
++    config MUSE_BLE_ON_DEMAND
++        bool "Muse: BLE only when the phone companion is on"
++        depends on MUSE_ENABLED && SPIRAM
++        default n
++        help
++            Once setup is complete, boot without the BLE stack and give the
++            controller's memory back to the heap instead of bringing BLE up
++            at boot in case the phone companion is turned on later. Turning
++            the companion ("Phone setup") on then restarts the device once
++            with BLE up. Unpaired devices still start BLE to pair.
++
          bool "SenseCAP Indicator air sensors (sensors.read)"
          depends on HOMEHUB_LED_BACKEND_SENSECAP_ST7701
+         default y
 diff --git a/esp32/main/app.c b/esp32/main/app.c
-index 2cfb86a..0ea5e9a 100644
+index 2cfb86a..f41a86e 100644
 --- a/esp32/main/app.c
 +++ b/esp32/main/app.c
-@@ -68,6 +68,9 @@
+@@ -68,11 +68,15 @@
  #if CONFIG_HOMEHUB_SENSECAP_SENSORS
  #include "sensecap_sensors.h"
  #endif
@@ -1267,7 +1282,13 @@ index 2cfb86a..0ea5e9a 100644
  #if CONFIG_MUSE_WATCHER_CAMERA
  #include "boards/watcher_camera.h"
  #endif
-@@ -1895,6 +1898,13 @@ static cJSON *on_ws_command(
+ #if CONFIG_MUSE_ENABLED
+ #include "muse_glue.h"
++#include "muse_state.h"
+ // Muse joins Wi-Fi from its own settings, before or without pairing.
+ #define WIFI_WITHOUT_PAIRING 1
+ #else
+@@ -1895,6 +1899,13 @@ static cJSON *on_ws_command(
          return voice_configure_command(params);
      }
  #endif
@@ -1281,6 +1302,188 @@ index 2cfb86a..0ea5e9a 100644
  #if CONFIG_HOMEHUB_SENSECAP_SENSORS
      if (strcmp(command, "sensors.read") == 0) {
          return sensecap_sensors_command();
+@@ -2314,7 +2325,49 @@ bool app_hatch_vm_credentials(const char *want_vm, char *vm_id, size_t id_cap,
+ #endif  // CONFIG_MUSE_ENABLED || CONFIG_HOMEHUB_VOICE
+ 
+ #if CONFIG_MUSE_ENABLED
++#if CONFIG_MUSE_BLE_ON_DEMAND
++// Registered devices boot without BLE and give its memory back to the heap
++// (about 30 KB of internal RAM the controller would otherwise hold). Turning
++// the phone companion on then restarts once with BLE up; this word, which
++// survives esp_restart() but not a power cycle, carries that request across.
++#define BLE_BOOT_REQUEST_MAGIC 0x424c4531u  // "BLE1"
++static RTC_NOINIT_ATTR uint32_t s_ble_boot_request;
++static bool s_ble_companion_boot = false;
++static bool s_ble_restart_pending = false;
++
++static bool take_ble_boot_request(void) {
++    bool requested = s_ble_boot_request == BLE_BOOT_REQUEST_MAGIC
++                     && esp_reset_reason() == ESP_RST_SW;
++    s_ble_boot_request = 0;
++    s_ble_companion_boot = requested;
++    return requested;
++}
++#endif
++
++bool app_ble_companion_boot(void) {
++#if CONFIG_MUSE_BLE_ON_DEMAND
++    return s_ble_companion_boot;
++#else
++    return false;
++#endif
++}
++
+ void app_ble_companion_set(bool advertise) {
++#if CONFIG_MUSE_BLE_ON_DEMAND
++    if (advertise && ble_server_memory_released()) {
++        // The setting is already saved, so the companion comes back on after
++        // the restart (see keeper_task in muse_glue.c).
++        if (s_ble_restart_pending) return;
++        s_ble_restart_pending = true;
++        ESP_LOGI(TAG, "phone companion needs BLE; restarting with BLE on");
++        muse_state_set_caption("PHONE SETUP: RESTARTING");
++        s_ble_boot_request = BLE_BOOT_REQUEST_MAGIC;
++        if (xTaskCreate(restart_task, "restart", 2048, NULL, 3, NULL) != pdPASS) {
++            esp_restart();
++        }
++        return;
++    }
++#endif
+     if (advertise) start_ble_setup_server_if_needed();
+     ble_server_set_companion_advertising(advertise);
+     if (config_setup_complete()) ui_set_ble(advertise ? "companion" : "off");
+@@ -2630,6 +2683,10 @@ void app_run(void) {
+     sensecap_sensors_init();
+ #endif
+ 
++#if CONFIG_MUSE_BLE_ON_DEMAND
++    // Read (and clear) it on every boot so a stale word never carries over.
++    bool ble_boot_requested = take_ble_boot_request();
++#endif
+     if (!setup_complete) {
+         // Unpaired devices advertise automatically — no button press is needed
+         // to become discoverable. Pairing enforces the configured confirmation policy.
+@@ -2643,10 +2700,23 @@ void app_run(void) {
+         ui_set_ble("off");
+         ESP_LOGI(TAG, "BLE setup disabled; long-press reset to pair again");
+ #if CONFIG_MUSE_ENABLED && CONFIG_SPIRAM
++#if CONFIG_MUSE_BLE_ON_DEMAND
++        // StackChan: keep BLE off unless the phone companion asked for it
++        // (app_ble_companion_set restarts into this branch), and hand the
++        // controller's memory to the heap for TLS, TTS and the wake word.
++        if (ble_boot_requested) {
++            ESP_LOGI(TAG, "restarted for the phone companion; starting BLE");
++            start_ble_setup_server_if_needed();
++        } else {
++            ble_server_release_unused_memory();
++            heap_snapshot("after ble_release");
++        }
++#else
+         // Muse may turn on its BLE companion later. The controller needs a
+         // 30 KB internal block that TLS and the VM session leave fragmented,
+         // so bring the stack up now; it stays silent until advertising is on.
+         start_ble_setup_server_if_needed();
++#endif
+ #endif
+     }
+ 
+diff --git a/esp32/main/app.h b/esp32/main/app.h
+index 70a8635..5ab5819 100644
+--- a/esp32/main/app.h
++++ b/esp32/main/app.h
+@@ -54,6 +54,10 @@ bool app_wifi_nap(void);
+ // Starts the BLE server if needed and keeps it advertising (or not) for Muse's
+ // phone-setup service once setup is complete.
+ void app_ble_companion_set(bool advertise);
++// True when this boot is the restart app_ble_companion_set() asked for to bring
++// BLE up for the phone companion (CONFIG_MUSE_BLE_ON_DEMAND). The companion
++// should then stay on instead of being switched off at boot.
++bool app_ble_companion_boot(void);
+ // A talk-button press. Returns true when it confirmed a pending pairing.
+ bool app_confirm_pairing_press(void);
+ // Full setup reset and reboot, from a worker task.
+diff --git a/esp32/main/ble_server.c b/esp32/main/ble_server.c
+index fd77035..1b717f7 100644
+--- a/esp32/main/ble_server.c
++++ b/esp32/main/ble_server.c
+@@ -752,6 +752,25 @@ bool ble_server_send_encrypted_json(const char *json, uint32_t generation) {
+     return sent;
+ }
+ 
++// Set once the controller's and host's memory is back in the heap. The stack
++// can't start again until a restart, so ble_server_start() refuses after that.
++static bool s_mem_released = false;
++
++void ble_server_release_unused_memory(void) {
++    if (s_started || s_mem_released) return;
++    esp_err_t err = esp_bt_mem_release(ESP_BT_MODE_BLE);
++    if (err != ESP_OK) {
++        ESP_LOGW(TAG, "esp_bt_mem_release: %s", esp_err_to_name(err));
++        return;
++    }
++    s_mem_released = true;
++    ESP_LOGI(TAG, "BLE not started; memory released until restart");
++}
++
++bool ble_server_memory_released(void) {
++    return s_mem_released;
++}
++
+ void ble_server_full_shutdown(void) {
+     if (!s_started || s_shutting_down) return;
+     s_shutting_down = true;
+@@ -794,6 +813,8 @@ void ble_server_full_shutdown(void) {
+     err = esp_bt_mem_release(ESP_BT_MODE_BLE);
+     if (err != ESP_OK) {
+         ESP_LOGW(TAG, "esp_bt_mem_release: %s", esp_err_to_name(err));
++    } else {
++        s_mem_released = true;
+     }
+ 
+     ESP_LOGI(TAG, "BLE shut down, memory released");
+@@ -936,6 +957,11 @@ static void host_task(void *arg) {
+ 
+ void ble_server_start(const char *device_name, const ble_callbacks_t *cb) {
+     if (s_started) return;
++    if (s_mem_released) {
++        // The controller would fail to initialise on released memory.
++        ESP_LOGW(TAG, "BLE memory already released; restart to use BLE");
++        return;
++    }
+     if (cb) {
+         s_cb = *cb;
+     } else {
+diff --git a/esp32/main/ble_server.h b/esp32/main/ble_server.h
+index 014a0a9..549025a 100644
+--- a/esp32/main/ble_server.h
++++ b/esp32/main/ble_server.h
+@@ -94,3 +94,8 @@ void ble_server_delayed_disconnect(uint32_t ms);
+ // for the shared radio. After this call, BLE cannot be brought back up
+ // without a reboot.
+ void ble_server_full_shutdown(void);
++
++// Gives the BLE controller's and host's static memory back to the heap when
++// the stack was never started. BLE stays unavailable until the next restart.
++void ble_server_release_unused_memory(void);
++bool ble_server_memory_released(void);
+diff --git a/esp32/main/muse_glue.c b/esp32/main/muse_glue.c
+index 51cba9a..c44d8dc 100644
+--- a/esp32/main/muse_glue.c
++++ b/esp32/main/muse_glue.c
+@@ -473,9 +473,11 @@ static void keeper_task(void *arg) {
+     uint32_t pending = KEEP_BLE;
+     bool napped = false;
+     bool setup_done = config_setup_complete();
+-    if (setup_done && muse_settings_ble_on()) {
++    if (setup_done && muse_settings_ble_on() && !app_ble_companion_boot()) {
+         // Registered devices boot with the phone companion off; the settings
+-        // switch turns it on until the next restart.
++        // switch turns it on until the next restart. With
++        // CONFIG_MUSE_BLE_ON_DEMAND turning it on restarts once to bring BLE
++        // up, and that boot keeps it on.
+         ESP_LOGI(TAG, "registered; phone setup BLE off at boot");
+         muse_settings_set_ble_on(false);
+     }
 diff --git a/esp32/main/noise_control.cpp b/esp32/main/noise_control.cpp
 index 2ba3e31..9e5575f 100644
 --- a/esp32/main/noise_control.cpp
