@@ -1,0 +1,14 @@
+# edge-tts は非公式 API に依存していて仕様変更で壊れやすいので、更新に早く気づけるよう毎週見る。
+version: 2
+updates:
+  - package-ecosystem: pip
+    directory: /tts-relay
+    schedule:
+      interval: weekly
+    groups:
+      dev-tools:
+        patterns: ["ruff", "mypy", "pip-audit"]
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly

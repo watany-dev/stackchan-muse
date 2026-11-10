@@ -1,0 +1,25 @@
+# tts-relay の lint・型検査の設定。依存パッケージは requirements.txt で管理する。
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["ALL"]
+ignore = [
+    "D",       # docstring のスタイルは問わない(モジュール docstring で仕様を説明している)
+    "COM812",  # ruff format と競合する
+    "E501",    # 行の長さは ruff format に任せる(docstring の日本語は幅の数え方が合わない)
+    "CPY001",  # ファイルごとの著作権表記は求めない(NOTICE にまとめている)
+    "BLE001",  # 不正な JSON をまとめて 400 にするため Exception を捕まえている
+    "RUF001",  # 日本語・韓国語の文字を含む文字列を許す
+    "RUF002",
+    "RUF003",
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["S101", "PLR2004", "ANN", "INP001"]
+"server.py" = ["INP001"]  # パッケージではなく単体のスクリプト
+
+[tool.mypy]
+strict = true
+python_version = "3.11"

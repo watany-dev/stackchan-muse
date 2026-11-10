@@ -1,0 +1,52 @@
+# firmware/*.sh の bats テスト(issue #18)。実機・ESP-IDF・ネットワークは使わない。
+name: shell-tests
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "firmware/**.sh"
+      - "firmware/test/**"
+      - ".github/workflows/shell-tests.yml"
+  pull_request:
+    paths:
+      - "firmware/**.sh"
+      - "firmware/test/**"
+      - ".github/workflows/shell-tests.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  bats:
+    name: bats (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        # macOS も回す: 普段の開発機で、bash 3.2 / BSD の wc・dd で動くかを見る
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - id: bats
+        uses: bats-core/bats-action@3566550e0f594451ac0f58fcbfdeca93aa29a45e # 4.1.0
+        with:
+          bats-version: 1.13.0
+          support-version: 0.3.0
+          assert-version: 2.2.4
+          detik-install: false
+          file-install: false
+
+      - name: Run bats
+        env:
+          BATS_LIB_PATH: ${{ steps.bats.outputs.lib-path }}
+          TOKEN_SAMPLES: 500
+        run: bats --print-output-on-failure --timing firmware/test
