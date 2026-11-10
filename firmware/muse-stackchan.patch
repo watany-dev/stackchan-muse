@@ -103,7 +103,7 @@ index 28cdbf7..a7113ad 100644
 +    rules:
 +      - if: "$CONFIG{MUSE_BOARD_ID} == \"m5stack_cores3\""
 diff --git a/esp32/components/muse/muse_chat_session.cpp b/esp32/components/muse/muse_chat_session.cpp
-index 9c99dc0..fe0c4b9 100644
+index 9c99dc0..8aff638 100644
 --- a/esp32/components/muse/muse_chat_session.cpp
 +++ b/esp32/components/muse/muse_chat_session.cpp
 @@ -65,6 +65,9 @@
@@ -149,7 +149,7 @@ index 9c99dc0..fe0c4b9 100644
      s_turn.phase = P_IDLE;
      s_turn.dict_id = s_turn.chat_id = 0;
      s_turn.tts_msg = -1;
-@@ -1496,11 +1518,223 @@ static void on_chat_ack(stream_t *s)
+@@ -1496,11 +1518,230 @@ static void on_chat_ack(stream_t *s)
      mark(M_ACK);
      ESP_LOGI(TAG, "chat/stream ack: user message %s", s_turn.user_ids[0]);
      cJSON_Delete(root);
@@ -177,6 +177,7 @@ index 9c99dc0..fe0c4b9 100644
 +    char *body;
 +};
 +static QueueHandle_t s_http_tts_q;
++static TaskHandle_t s_http_tts_task;   /* set once the worker is running */
 +
 +static void http_tts_drain(esp_http_client_handle_t c)
 +{
@@ -282,18 +283,24 @@ index 9c99dc0..fe0c4b9 100644
 +    }
 +}
 +
++/* Starts the worker once. What gets made is kept, so after a failure the next call
++ * only retries what's missing instead of leaking another buffer and queue. */
 +static bool http_tts_ensure_worker(void)
 +{
-+    if (s_http_tts_q) {
++    if (s_http_tts_task) {
 +        return true;
 +    }
-+    s_http_tts_sb = xStreamBufferCreateWithCaps(HTTP_TTS_SB, 1, MALLOC_CAP_SPIRAM);
-+    s_http_tts_q = xQueueCreate(2, sizeof(http_tts_req_t));
++    if (!s_http_tts_sb) {
++        s_http_tts_sb = xStreamBufferCreateWithCaps(HTTP_TTS_SB, 1, MALLOC_CAP_SPIRAM);
++    }
++    if (!s_http_tts_q) {
++        s_http_tts_q = xQueueCreate(2, sizeof(http_tts_req_t));
++    }
 +    if (!s_http_tts_sb || !s_http_tts_q ||
-+        xTaskCreatePinnedToCoreWithCaps(http_tts_worker, "http_tts", 12 * 1024, nullptr, 4, nullptr, 1,
++        xTaskCreatePinnedToCoreWithCaps(http_tts_worker, "http_tts", 12 * 1024, nullptr, 4, &s_http_tts_task, 1,
 +                                        MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT) != pdPASS) {
 +        ESP_LOGE(TAG, "tts relay: worker start failed");
-+        s_http_tts_q = nullptr;
++        s_http_tts_task = nullptr;
 +        return false;
 +    }
 +    return true;
@@ -373,7 +380,7 @@ index 9c99dc0..fe0c4b9 100644
  static void start_tts(void)
  {
      if (s_turn.tts_msg >= 0) {
-@@ -1526,6 +1760,26 @@ static void start_tts(void)
+@@ -1526,6 +1767,26 @@ static void start_tts(void)
           * end. decode() plays it at the speaker's volume, captions following,
           * and finishes the message once it's drained.
           */
@@ -400,7 +407,7 @@ index 9c99dc0..fe0c4b9 100644
          m.pcm_start = s_turn.pcm_out;
          m.pcm_frames = (uint32_t)(m.len * MIC_RATE / TEXT_CHARS_PER_S);
          m.tts = TTS_ACTIVE;
-@@ -1985,6 +2239,9 @@ static void hatch_task(void *arg)
+@@ -1985,6 +2246,9 @@ static void hatch_task(void *arg)
          }
          if (s_turn.phase == P_WAIT_REPLY) {
              start_tts();
@@ -834,10 +841,10 @@ index 2ba3e31..9e5575f 100644
                  "Capture one still JPEG frame from the SenseCAP Watcher camera. "
 diff --git a/esp32/main/stackchan_head.c b/esp32/main/stackchan_head.c
 new file mode 100644
-index 0000000..587911c
+index 0000000..d2f01df
 --- /dev/null
 +++ b/esp32/main/stackchan_head.c
-@@ -0,0 +1,311 @@
+@@ -0,0 +1,334 @@
 +/*
 + * Licensed under the Apache License, Version 2.0 (the "License");
 + * you may not use this file except in compliance with the License.
@@ -868,7 +875,7 @@ index 0000000..587911c
 +#include "esp_log.h"
 +#include "esp_timer.h"
 +#include "freertos/FreeRTOS.h"
-+#include "freertos/semphr.h"
++#include "freertos/queue.h"
 +#include "freertos/task.h"
 +
 +static const char *TAG = "stackchan_head";
@@ -896,9 +903,14 @@ index 0000000..587911c
 +#define SCS_REG_POS     56
 +#define SCS_TIMEOUT_MS  10
 +
++// Commands run one at a time on one task. One more can wait behind the one
++// running; past that the command is refused as busy rather than queuing up
++// moves that would play out seconds later.
++#define HEAD_QUEUE_LEN  1
++#define HEAD_STACK      4096
++
 +// ---- Low-level buses --------------------------------------------------------
 +
-+static SemaphoreHandle_t s_lock;
 +static bool s_ready;
 +static i2c_master_dev_handle_t s_py32;
 +
@@ -1041,7 +1053,7 @@ index 0000000..587911c
 +    bool ok = scs_torque(YAW_ID, true) && scs_torque(PITCH_ID, true)
 +           && scs_goal(YAW_ID, deg_to_raw(YAW_ZERO_RAW, yaw), duration_ms)
 +           && scs_goal(PITCH_ID, deg_to_raw(PITCH_ZERO_RAW, pitch), duration_ms);
-+    vTaskDelay(pdMS_TO_TICKS(duration_ms + 100));
++    if (ok) vTaskDelay(pdMS_TO_TICKS(duration_ms + 100));  // no move started otherwise
 +    return ok;
 +}
 +
@@ -1059,8 +1071,11 @@ index 0000000..587911c
 +typedef struct {
 +    head_cmd_t cmd;
 +    noise_ctrl_session_generation_t session_generation;
-+    char request_id[64];
++    char request_id[HEAD_REQUEST_ID_MAX + 1];
 +} head_job_t;
++
++static QueueHandle_t s_jobs;
++static TaskHandle_t s_task;
 +
 +static bool run_gesture(gesture_t g) {
 +    float y0 = 0, p0 = 20;
@@ -1090,11 +1105,9 @@ index 0000000..587911c
 +    return ok;
 +}
 +
-+static void head_task(void *arg) {
-+    head_job_t *job = (head_job_t *)arg;
++static void head_run(const head_job_t *job) {
 +    cJSON *result = NULL;
 +
-+    xSemaphoreTake(s_lock, portMAX_DELAY);
 +    if (head_init() != ESP_OK) {
 +        result = head_cmd_error("hardware", "servo bus did not come up; is the StackChan base attached?");
 +    } else {
@@ -1115,13 +1128,31 @@ index 0000000..587911c
 +            cJSON_AddNumberToObject(payload, "pitch_deg", roundf(pitch * 10) / 10);
 +        }
 +    }
-+    xSemaphoreGive(s_lock);
 +
 +    ESP_LOGI(TAG, "op %d done: %s", job->cmd.op,
 +             cJSON_IsTrue(cJSON_GetObjectItem(result, "ok")) ? "ok" : "error");
 +    noise_ctrl_send_command_result(job->session_generation, job->request_id, result);
-+    free(job);
-+    vTaskDelete(NULL);
++}
++
++static void head_task(void *arg) {
++    (void)arg;
++    head_job_t job;
++    for (;;) {
++        if (xQueueReceive(s_jobs, &job, portMAX_DELAY) == pdTRUE) head_run(&job);
++    }
++}
++
++// Starts the queue and the task once. What gets made is kept, so a failure
++// only retries what's missing next time.
++static bool head_start(void) {
++    if (s_task) return true;
++    if (!s_jobs) s_jobs = xQueueCreate(HEAD_QUEUE_LEN, sizeof(head_job_t));
++    if (!s_jobs) return false;
++    if (xTaskCreate(head_task, "head", HEAD_STACK, NULL, 4, &s_task) != pdPASS) {
++        s_task = NULL;
++        return false;
++    }
++    return true;
 +}
 +
 +cJSON *stackchan_head_command(const char *command, cJSON *params,
@@ -1132,18 +1163,17 @@ index 0000000..587911c
 +    if (st == HEAD_CMD_NOT_HEAD) return NULL;
 +    if (st != HEAD_CMD_OK) return head_cmd_status_error(st);
 +
-+    if (!s_lock) s_lock = xSemaphoreCreateMutex();
-+    if (!s_lock) return head_cmd_error("out_of_memory", "failed to allocate");
++    if (!head_cmd_request_id_ok(request_id)) {
++        return head_cmd_error("invalid_request_id", "request_id is longer than 63 bytes");
++    }
++    if (!head_start()) return head_cmd_error("out_of_memory", "failed to start head task");
 +
-+    head_job_t *job = calloc(1, sizeof(*job));
-+    if (!job) return head_cmd_error("out_of_memory", "failed to allocate");
-+    job->cmd = cmd;
-+    job->session_generation = session_generation;
-+    strncpy(job->request_id, request_id ? request_id : "", sizeof(job->request_id) - 1);
-+
-+    if (xTaskCreate(head_task, "head", 4096, job, 4, NULL) != pdPASS) {
-+        free(job);
-+        return head_cmd_error("out_of_memory", "failed to start head task");
++    head_job_t job = {0};
++    job.cmd = cmd;
++    job.session_generation = session_generation;
++    strcpy(job.request_id, request_id ? request_id : "");  // length checked above
++    if (xQueueSend(s_jobs, &job, 0) != pdTRUE) {
++        return head_cmd_error("busy", "the head is still moving; try again when it's done");
 +    }
 +    cJSON *async = cJSON_CreateObject();
 +    cJSON_AddBoolToObject(async, "_async", true);
@@ -1151,10 +1181,10 @@ index 0000000..587911c
 +}
 diff --git a/esp32/main/stackchan_head.h b/esp32/main/stackchan_head.h
 new file mode 100644
-index 0000000..65324a0
+index 0000000..b84efe9
 --- /dev/null
 +++ b/esp32/main/stackchan_head.h
-@@ -0,0 +1,30 @@
+@@ -0,0 +1,32 @@
 +/*
 + * Licensed under the Apache License, Version 2.0 (the "License");
 + * you may not use this file except in compliance with the License.
@@ -1179,9 +1209,11 @@ index 0000000..65324a0
 +// expander at 0x6F on the internal I2C bus. Constants follow M5Stack's
 +// StackChan-BSP (servo_init() in M5StackChan.cpp).
 +//
-+// Handles head.move, head.gesture and head.get. Each runs in its own task and
-+// answers with noise_ctrl_send_command_result(), so it returns {"_async": true}
-+// or a command error. Returns NULL when the command isn't a head command.
++// Handles head.move, head.gesture and head.get. They run one at a time on a
++// single task and answer with noise_ctrl_send_command_result(), so it returns
++// {"_async": true} or a command error ("busy" when one command is already
++// waiting behind the one running). Returns NULL when the command isn't a head
++// command.
 +cJSON *stackchan_head_command(const char *command, cJSON *params,
 +                              const char *request_id,
 +                              noise_ctrl_session_generation_t session_generation);

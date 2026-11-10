@@ -203,7 +203,7 @@ H_loop:
             await phase = "listen";
             phase := "wait";
             if ~isText /\ state # "RUNNING" then
-                \* http_tts_ensure_worker() は失敗することがある(作り直しは次回)
+                \* http_tts_ensure_worker() は失敗することがある(作れた分は残し、足りない分を次回作り直す。#13)
                 either
                     await ~workerUp;
                 or

@@ -29,6 +29,10 @@ extern "C" {
 #define DURATION_MAX_MS 3000
 #define DURATION_DEF_MS 600
 
+// Longest request_id a head command keeps for its async reply. A longer one
+// would have to be cut, and Muse couldn't match the reply, so it's refused.
+#define HEAD_REQUEST_ID_MAX 63
+
 typedef enum { HEAD_MOVE, HEAD_GESTURE, HEAD_GET } head_op_t;
 typedef enum { GESTURE_NOD, GESTURE_SHAKE, GESTURE_LOOK_AROUND, GESTURE_HOME } gesture_t;
 
@@ -53,6 +57,9 @@ head_cmd_status_t head_cmd_parse(const char *command, const cJSON *params,
 // {"ok": false, "error": {"code": ..., "message": ...}} for a status other
 // than HEAD_CMD_OK / HEAD_CMD_NOT_HEAD.
 cJSON *head_cmd_status_error(head_cmd_status_t status);
+
+// True if request_id (NULL counts as "") is at most HEAD_REQUEST_ID_MAX bytes.
+bool head_cmd_request_id_ok(const char *request_id);
 
 // {"ok": false, "error": {"code": code, "message": message}}.
 cJSON *head_cmd_error(const char *code, const char *message);

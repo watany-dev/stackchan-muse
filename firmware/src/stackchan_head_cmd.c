@@ -59,6 +59,12 @@ head_cmd_status_t head_cmd_parse(const char *command, const cJSON *params,
     return HEAD_CMD_OK;
 }
 
+bool head_cmd_request_id_ok(const char *request_id) {
+    if (!request_id) return true;
+    // Look no further than one byte past the limit.
+    return memchr(request_id, '\0', HEAD_REQUEST_ID_MAX + 1) != NULL;
+}
+
 cJSON *head_cmd_error(const char *code, const char *message) {
     cJSON *r = cJSON_CreateObject();
     if (!r) return NULL;
