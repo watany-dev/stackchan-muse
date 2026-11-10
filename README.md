@@ -107,7 +107,7 @@ Muse がガジェットに送るのは文字だけです。音声で聞くには
 
 ```bash
 cd tts-relay
-python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
+python3 -m venv .venv && .venv/bin/pip install --require-hashes -r requirements.txt
 cp .env.example .env && echo "TTS_KEY=$(openssl rand -hex 24)" >> .env   # .env はコミットされません
 set -a && . ./.env && set +a         # server.py は .env を読まないので環境変数にする
 .venv/bin/python server.py            # 127.0.0.1:3710 だけで待ち受けます
@@ -132,7 +132,7 @@ cp sdkconfig.local-tts.example sdkconfig.local-tts   # URL と TTS_KEY を書く
 
 ## 既知の問題
 
-元のリポジトリで書籍の執筆時に実測した値です(2026-10-07、韓国語・「Hi, Stack Chan」の構成)。日本語・「Hi, Muse」での実測はまだです。
+元のリポジトリで書籍の執筆時に実測した値です(2026-10-07、韓国語・「Hi, Stack Chan」の構成、**esp-sr 2.5.5**)。日本語・「Hi, Muse」での実測はまだです。今のパッチは esp-sr 2.6.1 / esp-dl 3.3.15 に固定しているので([依存の版](#依存の版))、内部 RAM の数値はこの表と変わりえます。
 
 | 問題 | 状態 |
 |---|---|
@@ -144,6 +144,22 @@ cp sdkconfig.local-tts.example sdkconfig.local-tts   # URL と TTS_KEY を書く
 | esp-sr 2.5.5 の wn9l の `clean()` が NULL を読んでパニックする | 呼ばずに、録音後1.5秒の検出を無視して回避 |
 | 作業パスに日本語など ASCII 以外の文字があると、コンパイラが spec ファイルのパスを読めない | `BUILD_DIR` を英数字だけのパス(既定 `~/.cache/stackchan-muse/build`)にして解決 |
 | 音声なしで字幕だけを流すときの速さはバイト数で決まるので、日本語(1文字3バイト)は英語よりゆっくり流れる | SDK の動作。未対応 |
+
+## 依存の版
+
+ビルドする時期で結果やメモリの数値が変わらないよう、依存の版を固定しています(#7)。
+
+| 対象 | 固定している場所 |
+|---|---|
+| Muse Gadget SDK | `firmware/env.sh` の `SDK_REV`(コミット) |
+| ESP-IDF | v6.0.1(`firmware/env.sh`、CI のコンテナ `espressif/idf:v6.0.1`) |
+| ESP-IDF コンポーネント(esp-sr、esp-dl、LVGL など) | パッチが入れる `esp32/dependencies.lock`。esp-sr は `idf_component.yml` でも `2.6.1` ちょうどを指定 |
+| tts-relay(Python) | `tts-relay/requirements.txt`(間接依存まで、ハッシュ付き) |
+
+`build.sh` はビルド中に `dependencies.lock` が書き換わると警告します(CI では失敗にします)。版を上げるときは:
+
+- **ESP-IDF コンポーネント**: SDK の `idf_component.yml` を書き換えて `./build.sh` を実行し、書き換わった lock ごとパッチを作り直します。lock は SDK の `.gitignore` に入っているので、`git -C muse-gadget-sdk add -f esp32/dependencies.lock` で index に入れると、`git diff HEAD` で作るパッチに含まれます。上げたあとは実機で動作とメモリを確かめ、「既知の問題」の数値と版を書き直します。
+- **tts-relay**: `requirements.in` の版を変えて、`requirements.txt` の先頭に書いてある `uv pip compile ...` のコマンドで作り直します。
 
 ## 元に戻す
 

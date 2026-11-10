@@ -53,6 +53,17 @@ echo "Wake word: $WAKE_WORD"
 mkdir -p "$BUILD_DIR"
 rm -f "$BUILD_DIR/sdkconfig" # a stale generated config would override the overlays
 cd "$E"
+# The patch pins every managed component in dependencies.lock (#7). If the build
+# rewrote it, the component versions differ from the ones we measured.
+lock_before="$(cksum <dependencies.lock 2>/dev/null || true)"
 idf.py -B "$BUILD_DIR" -DIDF_TARGET=esp32s3 -DSDKCONFIG="$BUILD_DIR/sdkconfig" \
     -DSDKCONFIG_DEFAULTS="$DEFAULTS" build
+if [ -n "$lock_before" ] && [ "$(cksum <dependencies.lock 2>/dev/null || true)" != "$lock_before" ]; then
+    msg="dependencies.lock changed during the build, so components differ from the pinned versions. If you changed idf_component.yml on purpose, put the new lock into muse-stackchan.patch (see README)."
+    if [ "${CI:-}" = true ]; then
+        echo "Error: $msg" >&2
+        exit 1
+    fi
+    echo "Warning: $msg" >&2
+fi
 echo "Built in $BUILD_DIR. Next: ./flash.sh"
