@@ -1,12 +1,12 @@
 {
-  "_comment": "メモリ使用量の上限。超えると CI が失敗する。diram_used_max は計測値 + 2048。2026-11-10 の main(SDK b139b45 + 日本語化後のパッチ、#2/#3 は未適用)で測った値が基準。省メモリ化が入ったら下げ、メモリを増やす変更ではこの値を上げることをレビューで判断する。",
+  "_comment": "メモリ使用量の上限。超えると CI が失敗する。diram_used_max は計測値 + 2048。2026-11-10 の省メモリ化(#2/#3/#4、PR #28)後に CI で測った値が基準(TTS あり 132,045、なし 132,029。適用前は 180,545 / 175,905)。メモリを増やす変更ではこの値を上げることをレビューで判断する。",
   "default": {
     "app_ratio_max": 0.95
   },
   "variants": {
-    "histackchan-tts-on": { "diram_used_max": 182593 },
-    "histackchan-tts-off": { "diram_used_max": 177953 },
-    "himuse-tts-on": { "diram_used_max": 182593 },
-    "himuse-tts-off": { "diram_used_max": 177953 }
+    "histackchan-tts-on": { "diram_used_max": 134093 },
+    "histackchan-tts-off": { "diram_used_max": 134077 },
+    "himuse-tts-on": { "diram_used_max": 134093 },
+    "himuse-tts-off": { "diram_used_max": 134077 }
   }
 }
