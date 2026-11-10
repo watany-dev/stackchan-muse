@@ -3,10 +3,10 @@
 # that's what you backed up). Overwrites everything, Muse pairing included.
 set -euo pipefail
 . "$(dirname "$0")/env.sh"
-[ $# -eq 1 ] && [ -f "$1" ] || {
+if [ $# -ne 1 ] || [ ! -f "$1" ]; then
     echo "usage: $0 stackchan_backup.bin" >&2
     exit 1
-}
+fi
 [ "$(wc -c <"$1" | tr -d ' ')" = 16777216 ] || {
     echo "$1 is not a 16 MB backup" >&2
     exit 1
