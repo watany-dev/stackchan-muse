@@ -73,29 +73,24 @@ jobs:
             echo "OUT_DIR=$GITHUB_WORKSPACE/out/$VARIANT"
             echo "IDF_EXPORT=$IDF_PATH/export.sh"
             echo "IDF_COMPONENT_CACHE_PATH=$GITHUB_WORKSPACE/.ci-cache/idf-components"
-            echo "npm_config_cache=$GITHUB_WORKSPACE/.ci-cache/npm"
           } >> "$GITHUB_ENV"
 
-      - name: Install packages
-        if: steps.variant.outputs.skip != 'true'
-        env:
-          ANALYZE: ${{ matrix.analyze }}
+      # 日本語化(PR #1)以降は字幕フォントの再生成が FONT_HANGUL=1 のときだけなので、
+      # 通常のビルドに追加のパッケージは要らない。静的解析の構成だけ解析ツールを入れる。
+      - name: Install analysis tools
+        if: matrix.analyze && steps.variant.outputs.skip != 'true'
         run: |
-          # gen_cjk_font.sh は shasum(perl)を使う
-          pkgs="perl"
-          [ "$ANALYZE" = true ] && pkgs="$pkgs cppcheck clang-format"
-          apt-get update -qq
-          # shellcheck disable=SC2086
-          apt-get install -y -qq --no-install-recommends $pkgs
-
-      # 字幕フォントの生成(gen_cjk_font.sh)に npx を使う
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
-        if: steps.variant.outputs.skip != 'true'
-        with:
-          node-version: 22
+          # ミラーの更新途中で 404 になることがあるので、索引を取り直して 3 回まで試す
+          for i in 1 2 3; do
+            apt-get update -qq && apt-get install -y -qq --no-install-recommends -o Acquire::Retries=3 \
+              cppcheck clang-format && exit 0
+            echo "apt-get が失敗しました($i 回目)。やり直します" >&2
+            sleep $((i * 10))
+          done
+          exit 1
 
       # managed_components は setup.sh が clone する SDK の中にできるので直接は保存できない。
-      # 代わりにコンポーネントマネージャーのダウンロードキャッシュと npm のキャッシュを保存する。
+      # 代わりにコンポーネントマネージャーのダウンロードキャッシュを保存する。
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         if: steps.variant.outputs.skip != 'true'
         with:
@@ -103,7 +98,7 @@ jobs:
           key: firmware-deps-${{ hashFiles('firmware/muse-stackchan.patch', 'firmware/env.sh') }}
           restore-keys: firmware-deps-
 
-      - name: Setup SDK (clone, patch, font)
+      - name: Setup SDK (clone, patch)
         if: steps.variant.outputs.skip != 'true'
         run: ./firmware/setup.sh
 
