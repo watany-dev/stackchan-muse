@@ -7,6 +7,7 @@ on:
     paths:
       - firmware/muse-stackchan.patch
       - firmware/*.sh
+      - firmware/src/**
       - firmware/sdkconfig.*
       - firmware/ci/**
       - .github/workflows/firmware-build.yml
@@ -15,6 +16,7 @@ on:
     paths:
       - firmware/muse-stackchan.patch
       - firmware/*.sh
+      - firmware/src/**
       - firmware/sdkconfig.*
       - firmware/ci/**
       - .github/workflows/firmware-build.yml

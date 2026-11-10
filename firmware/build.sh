@@ -25,6 +25,8 @@ E="$SDK_DIR/esp32"
 cp "$HERE"/src/*.c "$HERE"/src/*.h "$E/main/"
 # The UTF-8 cuts for replies (#12) are used by the muse component.
 cp "$HERE"/src/stackchan_utf8.c "$HERE"/src/stackchan_utf8.h "$E/components/muse/"
+# So is the wake word chunking (#17).
+cp "$HERE"/src/stackchan_wake_chunk.c "$HERE"/src/stackchan_wake_chunk.h "$E/components/muse/"
 cp "$HERE/sdkconfig.local-token" "$E/devices/sdkconfig.local-token"
 DEFAULTS="sdkconfig.defaults;devices/sdkconfig.muse;devices/sdkconfig.muse-m5stack-cores3;devices/sdkconfig.muse-stackchan;devices/sdkconfig.local-token"
 if [ -f "$HERE/sdkconfig.local-tts" ]; then

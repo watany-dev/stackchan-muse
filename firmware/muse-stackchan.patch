@@ -37,20 +37,22 @@ index de2542f..b95b59e 100644
  static const uint8_t BAYER4[4][4] = {
      { 0, 8, 2, 10 },
 diff --git a/esp32/components/muse/CMakeLists.txt b/esp32/components/muse/CMakeLists.txt
-index 2732802..bc3d681 100644
+index 2732802..2d497b2 100644
 --- a/esp32/components/muse/CMakeLists.txt
 +++ b/esp32/components/muse/CMakeLists.txt
-@@ -49,6 +49,9 @@ if(CONFIG_MUSE_ENABLED)
+@@ -49,6 +49,11 @@ if(CONFIG_MUSE_ENABLED)
          list(APPEND srcs "muse_chat_link.c")   # text replies over Link's session
      endif()
      list(APPEND srcs "muse_chat_text.c")
 +    if(CONFIG_MUSE_WAKE_WORD)
-+        list(APPEND srcs "muse_wake.c")
++        # The chunking comes from firmware/src in the stackchan-muse repo
++        # (build.sh copies it here).
++        list(APPEND srcs "muse_wake.c" "stackchan_wake_chunk.c")
 +    endif()
      if(CONFIG_MUSE_CJK_FONT)
          list(APPEND srcs "fonts/muse_font_cjk_16.c")   # captions' CJK fallback
      endif()
-@@ -102,6 +105,12 @@ elseif(CONFIG_HOMEHUB_VOICE)
+@@ -102,6 +107,12 @@ elseif(CONFIG_HOMEHUB_VOICE)
      list(APPEND embed "test_reply.mp3")
  endif()
  
@@ -63,7 +65,7 @@ index 2732802..bc3d681 100644
  set(muse_priv_requires
      esp_timer esp_driver_usb_serial_jtag esp_psram nvs_flash
      bt esp-tls mbedtls esp_app_format esp_http_client
-@@ -109,6 +118,11 @@ set(muse_priv_requires
+@@ -109,6 +120,11 @@ set(muse_priv_requires
      esp_lcd esp_adc esp_driver_i2s esp_driver_ledc esp_driver_spi esp_driver_uart esp_wifi
      esp_driver_pcnt)
  list(APPEND muse_priv_requires camera)
@@ -638,10 +640,10 @@ index 3c68662..f6fdd56 100644
              continue;   /* a tap: it only woke Muse */
 diff --git a/esp32/components/muse/muse_wake.c b/esp32/components/muse/muse_wake.c
 new file mode 100644
-index 0000000..0a6526b
+index 0000000..d7c5ca1
 --- /dev/null
 +++ b/esp32/components/muse/muse_wake.c
-@@ -0,0 +1,121 @@
+@@ -0,0 +1,104 @@
 +/*
 + * Licensed under the Apache License, Version 2.0 (the "License");
 + * you may not use this file except in compliance with the License.
@@ -658,8 +660,6 @@ index 0000000..0a6526b
 +
 +#include "muse_wake.h"
 +
-+#include <string.h>
-+
 +#include "esp_heap_caps.h"
 +#include "esp_log.h"
 +#include "freertos/FreeRTOS.h"
@@ -667,14 +667,18 @@ index 0000000..0a6526b
 +#include "esp_wn_iface.h"
 +#include "esp_wn_models.h"
 +#include "model_path.h"
++#include "stackchan_wake_chunk.h"
 +
 +static const char *TAG = "muse_wake";
 +
 +static const esp_wn_iface_t *s_wn;
 +static model_iface_data_t *s_md;
-+static int16_t *s_buf;   /* one WakeNet chunk */
-+static size_t s_chunk, s_fill;
-+static int s_ignore;     /* chunks to run without acting on, after a reset */
++static wake_chunk_t s_chunks;   /* cuts the mic audio into WakeNet chunks */
++
++static bool detect(void *ctx, int16_t *chunk)
++{
++    return s_wn->detect(s_md, chunk) == WAKENET_DETECTED;
++}
 +
 +static bool load(void)
 +{
@@ -690,41 +694,23 @@ index 0000000..0a6526b
 +        ESP_LOGE(TAG, "couldn't load %s", name);
 +        return false;
 +    }
-+    s_chunk = (size_t)s_wn->get_samp_chunksize(s_md);
-+    s_buf = heap_caps_malloc(s_chunk * sizeof(int16_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-+    if (!s_buf) {
++    size_t chunk = (size_t)s_wn->get_samp_chunksize(s_md);
++    int16_t *buf = heap_caps_malloc(chunk * sizeof(int16_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
++    if (!buf) {
 +        s_wn->destroy(s_md);
 +        s_md = NULL;
 +        return false;
 +    }
++    wake_chunk_init(&s_chunks, buf, chunk, detect, NULL);
 +    ESP_LOGI(TAG, "listening for \"%s\" (%s, %u-sample chunks, %d Hz)", s_wn->get_word_name(s_md, 1), name,
-+             (unsigned)s_chunk, s_wn->get_samp_rate(s_md));
++             (unsigned)chunk, s_wn->get_samp_rate(s_md));
 +    return true;
 +}
 +
++/* The chunking is in stackchan_wake_chunk.c so the host tests can run it. */
 +bool muse_wake_feed(const int16_t *pcm, size_t frames)
 +{
-+    if (!s_md) {
-+        return false;
-+    }
-+    bool heard = false;
-+    while (frames) {
-+        size_t take = s_chunk - s_fill < frames ? s_chunk - s_fill : frames;
-+        memcpy(s_buf + s_fill, pcm, take * sizeof(int16_t));
-+        s_fill += take;
-+        pcm += take;
-+        frames -= take;
-+        if (s_fill == s_chunk) {
-+            s_fill = 0;
-+            if (s_wn->detect(s_md, s_buf) == WAKENET_DETECTED && s_ignore <= 0) {
-+                heard = true;
-+            }
-+            if (s_ignore > 0) {
-+                s_ignore--;
-+            }
-+        }
-+    }
-+    return heard;
++    return wake_chunk_feed(&s_chunks, pcm, frames);
 +}
 +
 +/*
@@ -760,8 +746,7 @@ index 0000000..0a6526b
 + */
 +void muse_wake_reset(void)
 +{
-+    s_fill = 0;
-+    s_ignore = s_chunk ? (int)(16000 * 3 / 2 / s_chunk) : 0;
++    wake_chunk_reset(&s_chunks);
 +}
 diff --git a/esp32/components/muse/muse_wake.h b/esp32/components/muse/muse_wake.h
 new file mode 100644
