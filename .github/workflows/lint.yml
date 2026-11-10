@@ -45,7 +45,9 @@ jobs:
       - name: ruff format
         run: ruff format --check --diff .
       - name: mypy
-        run: mypy server.py
+        run: mypy server.py tests
+      - name: pytest
+        run: pytest
       - name: pip-audit
         run: pip-audit -r requirements.txt
 
