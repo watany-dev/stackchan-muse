@@ -14,6 +14,9 @@ if git -C "$SDK_DIR" apply --reverse --check "$HERE/muse-stackchan.patch" 2>/dev
     echo "Patch already applied."
 else
     git -C "$SDK_DIR" checkout -q "$SDK_REV"
+    # The patch adds dependencies.lock, which the SDK's .gitignore hides from
+    # checkout; a lock left by an earlier build would make the apply fail.
+    rm -f "$SDK_DIR/esp32/dependencies.lock"
     git -C "$SDK_DIR" apply "$HERE/muse-stackchan.patch"
     echo "Patch applied on $(git -C "$SDK_DIR" rev-parse --short HEAD)."
 fi

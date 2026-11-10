@@ -99,7 +99,7 @@ index 28cdbf7..a7113ad 100644
      rules:
        - if: "$CONFIG{MUSE_BOARD_ID} == \"waveshare_s3_lcd7\""
 +  espressif/esp-sr:
-+    version: "^2.6.1"   # wn10_himuse ("Hi, Muse") first ships in 2.6.1
++    version: "2.6.1"   # exact (#7); wn10_himuse ("Hi, Muse") first ships in 2.6.1
 +    rules:
 +      - if: "$CONFIG{MUSE_BOARD_ID} == \"m5stack_cores3\""
 diff --git a/esp32/components/muse/muse_chat_session.cpp b/esp32/components/muse/muse_chat_session.cpp
