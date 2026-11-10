@@ -10,13 +10,19 @@ if [ ! -d "$SDK_DIR/.git" ]; then
 fi
 git -C "$SDK_DIR" fetch -q origin "$SDK_REV" 2>/dev/null || true
 
+# The patch pins the managed components in esp32/dependencies.lock (#7). The
+# SDK's .gitignore hides that file from git, so handle it on its own.
+LOCK="esp32/dependencies.lock"
 if git -C "$SDK_DIR" apply --reverse --check "$HERE/muse-stackchan.patch" 2>/dev/null; then
     echo "Patch already applied."
+elif git -C "$SDK_DIR" apply --reverse --check --exclude="$LOCK" "$HERE/muse-stackchan.patch" 2>/dev/null; then
+    # Only the lock differs: a build re-resolved the components. Put the pinned one back.
+    rm -f "$SDK_DIR/$LOCK"
+    git -C "$SDK_DIR" apply --include="$LOCK" "$HERE/muse-stackchan.patch"
+    echo "Patch already applied; $LOCK reset to the pinned versions."
 else
     git -C "$SDK_DIR" checkout -q "$SDK_REV"
-    # The patch adds dependencies.lock, which the SDK's .gitignore hides from
-    # checkout; a lock left by an earlier build would make the apply fail.
-    rm -f "$SDK_DIR/esp32/dependencies.lock"
+    rm -f "$SDK_DIR/$LOCK" # checkout leaves an ignored file alone, and apply won't overwrite it
     git -C "$SDK_DIR" apply "$HERE/muse-stackchan.patch"
     echo "Patch applied on $(git -C "$SDK_DIR" rev-parse --short HEAD)."
 fi

@@ -259,3 +259,31 @@ needs_wake_word() {
     assert_output --partial "Wake word: himuse"
     [ ! -e "$E/devices/sdkconfig.local-wake" ]
 }
+
+# --- dependencies.lock (#7) --------------------------------------------------
+
+@test "lock unchanged by the build: no warning" {
+    write_token "$VALID_TOKEN"
+    echo pinned >"$E/dependencies.lock"
+    run "$WORK/build.sh"
+    assert_success
+    refute_output --partial "dependencies.lock changed"
+}
+
+@test "lock rewritten by the build: warning locally, still succeeds" {
+    write_token "$VALID_TOKEN"
+    echo pinned >"$E/dependencies.lock"
+    stub idf.py 'echo resolved-again > dependencies.lock'
+    CI=false run "$WORK/build.sh"
+    assert_success
+    assert_output --partial "Warning: dependencies.lock changed"
+}
+
+@test "lock rewritten by the build: fails in CI" {
+    write_token "$VALID_TOKEN"
+    echo pinned >"$E/dependencies.lock"
+    stub idf.py 'echo resolved-again > dependencies.lock'
+    CI=true run "$WORK/build.sh"
+    assert_failure 1
+    assert_output --partial "Error: dependencies.lock changed"
+}
